@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@keyframes floatFade {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.85);
+  }
+  20% {
+    opacity: 1;
+    transform: translate(-50%, -12px) scale(1.1);
+  }
+  80% {
+    opacity: 1;
+    transform: translate(-50%, -32px) scale(1.0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -48px) scale(0.9);
+  }
+}
+
+.animate-float-fade {
+  animation: floatFade 1.1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}

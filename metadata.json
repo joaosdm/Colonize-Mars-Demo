@@ -1,0 +1,6 @@
+{
+  "name": "Colonize Mars",
+  "description": "Interplanetary space travel simulator with realistic orbital physics, resource management, procedural celestial bodies, modular ship upgrades, dynamic trading hub, and AI crew management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
