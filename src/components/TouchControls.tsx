@@ -1,18 +1,16 @@
 /**
  * Ergonomic Mobile & Tablet Touch Controls
- * Features:
- * - Dynamic Virtual Analog Joystick on bottom-left (smooth normalized 360-degree vector)
- * - Large touch buttons on bottom-right: "PULAR" (Jump) and "AÇÃO" (Action)
- * - Action button glows and pulses with an animated ring when inside an interactive trigger zone!
+ * Virtual analog joystick on bottom-left + Jump/Jetpack, Plasma Pulse & Action buttons on bottom-right.
  */
 
-import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { ArrowUp, Zap } from 'lucide-react';
+import React, { useRef, useState, useCallback } from 'react';
+import { ArrowUp, Zap, Crosshair } from 'lucide-react';
 
 interface TouchControlsProps {
   onMoveChange: (vector: { x: number; y: number }) => void;
   onJumpPress: (isPressed: boolean) => void;
   onActionPress: () => void;
+  onShootPress: () => void;
   hasActiveTrigger: boolean;
 }
 
@@ -20,6 +18,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
   onMoveChange,
   onJumpPress,
   onActionPress,
+  onShootPress,
   hasActiveTrigger,
 }) => {
   const joystickBaseRef = useRef<HTMLDivElement>(null);
@@ -27,7 +26,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const touchIdRef = useRef<number | null>(null);
 
-  const radius = 48; // Joystick radius in pixels
+  const radius = 48;
 
   const handleTouchStart = useCallback(
     (e: React.TouchEvent<HTMLDivElement>) => {
@@ -45,7 +44,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
 
       let dx = touch.clientX - centerX;
       let dy = touch.clientY - centerY;
-      const dist = Math.sqrt(dx * dx + dy * dy);
+      const dist = Math.hypot(dx, dy);
 
       if (dist > radius) {
         dx = (dx / dist) * radius;
@@ -55,7 +54,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
       setThumbPos({ x: dx, y: dy });
       onMoveChange({ x: dx / radius, y: dy / radius });
     },
-    [onMoveChange, radius]
+    [onMoveChange]
   );
 
   const handleTouchMove = useCallback(
@@ -74,7 +73,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
 
           let dx = touch.clientX - centerX;
           let dy = touch.clientY - centerY;
-          const dist = Math.sqrt(dx * dx + dy * dy);
+          const dist = Math.hypot(dx, dy);
 
           if (dist > radius) {
             dx = (dx / dist) * radius;
@@ -87,7 +86,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
         }
       }
     },
-    [onMoveChange, radius]
+    [onMoveChange]
   );
 
   const handleTouchEnd = useCallback(
@@ -108,7 +107,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
 
   return (
     <div className="absolute inset-0 pointer-events-none select-none z-20 overflow-hidden">
-      {/* 1. Virtual Joystick (Bottom-Left) */}
+      {/* Virtual Joystick */}
       <div
         className="absolute bottom-8 left-8 pointer-events-auto touch-none"
         style={{
@@ -122,35 +121,42 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
           onTouchCancel={handleTouchEnd}
-          className="relative w-32 h-32 rounded-full border-2 border-cyan-500/40 bg-slate-950/45 backdrop-blur-none flex items-center justify-center shadow-lg shadow-black/40"
+          className="relative w-32 h-32 rounded-full border-2 border-cyan-500/50 bg-slate-950/60 flex items-center justify-center shadow-lg"
         >
-          {/* Subtle directional crosshairs */}
           <div className="absolute w-full h-[1px] bg-cyan-500/20" />
           <div className="absolute h-full w-[1px] bg-cyan-500/20" />
 
-          {/* Draggable thumb knob */}
           <div
-            className={`w-14 h-14 rounded-full border-2 border-cyan-400 bg-gradient-to-br from-cyan-500 to-sky-700 shadow-md flex items-center justify-center transition-transform ${
-              isDragging ? 'scale-110 shadow-cyan-500/50' : 'scale-100'
+            className={`w-14 h-14 rounded-full border-2 border-cyan-400 bg-cyan-600 shadow-md flex items-center justify-center ${
+              isDragging ? 'scale-110' : 'scale-100'
             }`}
-            style={{
-              transform: `translate(${thumbPos.x}px, ${thumbPos.y}px)`,
-            }}
+            style={{ transform: `translate(${thumbPos.x}px, ${thumbPos.y}px)` }}
           >
-            <div className="w-4 h-4 rounded-full bg-white/70" />
+            <div className="w-4 h-4 rounded-full bg-white/80" />
           </div>
         </div>
       </div>
 
-      {/* 2. Action Buttons (Bottom-Right) */}
+      {/* Action Buttons: Pulse, Jump/Jet, Action */}
       <div
-        className="absolute bottom-8 right-8 pointer-events-auto flex items-end gap-4 touch-none"
+        className="absolute bottom-8 right-8 pointer-events-auto flex items-end gap-3 touch-none"
         style={{
           paddingBottom: 'max(env(safe-area-inset-bottom), 12px)',
           paddingRight: 'max(env(safe-area-inset-right), 12px)',
         }}
       >
-        {/* Jump Button (0.38g Leap) */}
+        <button
+          onTouchStart={(e) => {
+            e.preventDefault();
+            onShootPress();
+          }}
+          className="w-16 h-16 rounded-full bg-slate-900/90 border-2 border-sky-500/75 active:scale-95 flex flex-col items-center justify-center shadow-xl"
+          title="Disparar Pulso de Plasma"
+        >
+          <Crosshair className="w-6 h-6 text-sky-400" />
+          <span className="text-[9px] font-black tracking-wider text-sky-200 mt-0.5">PULSO</span>
+        </button>
+
         <button
           onTouchStart={(e) => {
             e.preventDefault();
@@ -160,31 +166,33 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
             e.preventDefault();
             onJumpPress(false);
           }}
-          className="w-20 h-20 rounded-full bg-slate-900/80 border-2 border-amber-500/60 active:scale-95 active:bg-amber-600/80 flex flex-col items-center justify-center shadow-xl shadow-black/50 transition-all"
-          title="Salto Gravitacional"
+          className="w-18 h-18 rounded-full bg-slate-900/90 border-2 border-amber-500/70 active:scale-95 flex flex-col items-center justify-center shadow-xl"
+          title="Salto / Jetpack"
         >
-          <ArrowUp className="w-7 h-7 text-amber-400" />
-          <span className="text-[11px] font-black tracking-wider text-amber-200 mt-0.5">PULAR</span>
+          <ArrowUp className="w-6 h-6 text-amber-400" />
+          <span className="text-[9px] font-black tracking-wider text-amber-200 mt-0.5">
+            PULAR/JET
+          </span>
         </button>
 
-        {/* Action Button (Instant Trigger or Acceleration) */}
         <button
           onTouchStart={(e) => {
             e.preventDefault();
             onActionPress();
           }}
-          className={`relative w-22 h-22 rounded-full border-2 active:scale-95 flex flex-col items-center justify-center shadow-2xl transition-all ${
+          className={`w-20 h-20 rounded-full border-2 active:scale-95 flex flex-col items-center justify-center shadow-2xl ${
             hasActiveTrigger
-              ? 'bg-gradient-to-br from-emerald-600 to-teal-800 border-emerald-300 ring-4 ring-emerald-400/50 shadow-emerald-500/50'
-              : 'bg-slate-900/80 border-slate-600 text-slate-400'
+              ? 'bg-emerald-700 border-emerald-300 ring-4 ring-emerald-400/40'
+              : 'bg-slate-900/90 border-slate-600 text-slate-400'
           }`}
-          title="Ação / Construção"
+          title="Construir / Acelerar / Reparar"
         >
-          {hasActiveTrigger && (
-            <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-emerald-400 border border-white" />
-          )}
-          <Zap className={`w-8 h-8 ${hasActiveTrigger ? 'text-white' : 'text-slate-400'}`} />
-          <span className={`text-[12px] font-black tracking-wider mt-0.5 ${hasActiveTrigger ? 'text-white' : 'text-slate-400'}`}>
+          <Zap className={`w-7 h-7 ${hasActiveTrigger ? 'text-white' : 'text-slate-400'}`} />
+          <span
+            className={`text-[11px] font-black tracking-wider mt-0.5 ${
+              hasActiveTrigger ? 'text-white' : 'text-slate-400'
+            }`}
+          >
             AÇÃO
           </span>
         </button>

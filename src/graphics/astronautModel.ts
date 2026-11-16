@@ -1,264 +1,392 @@
 /**
- * Procedural 3D Astronaut Model in EVA Spacesuit
- * Assembles a composite character with:
- * - Pressurized suit, gold visor, life support backpack (PLSS)
- * - Articulated arms and legs with low-gravity stride animation
- * - 3D Directional Guide Arrow hovering at astronaut's feet pointing to active mission target
+ * Procedural 3D Astronaut Model in EVA Spacesuit (Composite 12-Part Group)
+ * Supports local & remote co-op players with:
+ * - Distinct suit accent trim colors (Orange P1, Cyan P2, Emerald P3)
+ * - Soft radial contact shadow disc grounded underneath
+ * - Twin Jetpack Thruster Flame Cones
+ * - Distance-synced walk stride + squash-and-stretch jump/land kinetics
+ * - Floating player nameplate sprite (for co-op teammates)
+ * - 3D Directional Guide Arrow (local player only)
  */
 
 import * as THREE from 'three';
 
 export interface AstronautCharacter {
   rootGroup: THREE.Group;
+  bodyMeshGroup: THREE.Group;
   leftArm: THREE.Group;
   rightArm: THREE.Group;
   leftLeg: THREE.Group;
   rightLeg: THREE.Group;
-  backpack: THREE.Mesh;
-  helmetLight: THREE.PointLight;
+  jetpackFlames: THREE.Group;
+  contactShadow: THREE.Mesh;
   guideArrowGroup: THREE.Group;
-  updateAnimation: (isMoving: boolean, isJumping: boolean, timeSec: number) => void;
-  updateGuideArrow: (astronautPos: THREE.Vector3, targetPos: { x: number; z: number } | null, timeSec: number) => void;
+  updateAnimation: (params: {
+    isMoving: boolean;
+    isGrounded: boolean;
+    isJetpacking: boolean;
+    distanceTraveled: number;
+    squashY: number;
+    groundY: number;
+    timeSec: number;
+  }) => void;
+  updateGuideArrow: (
+    astronautX: number,
+    astronautZ: number,
+    targetPos: { x: number; z: number } | null,
+    timeSec: number
+  ) => void;
 }
 
-export function createAstronaut(): AstronautCharacter {
-  const root = new THREE.Group();
-  root.name = 'Mars_Astronaut';
+export interface CreateAstronautOptions {
+  accentColorHex?: string;
+  labelName?: string;
+  showGuideArrow?: boolean;
+}
 
-  // Materials
+export function createAstronaut(options: CreateAstronautOptions = {}): AstronautCharacter {
+  const accentHex = options.accentColorHex || '#f97316';
+  const accentColor = new THREE.Color(accentHex);
+
+  const root = new THREE.Group();
+  root.name = options.labelName ? `Astronaut_${options.labelName}` : 'Mars_Astronaut';
+
+  const bodyGroup = new THREE.Group();
+  root.add(bodyGroup);
+
+  // Materials with calibrated roughness/metalness contrast
   const suitWhiteMat = new THREE.MeshStandardMaterial({
-    color: 0xf8fafc, // Pressurized clean white suit fabric
-    roughness: 0.6,
-    metalness: 0.1,
+    color: 0xf1f5f9,
+    roughness: 0.68,
+    metalness: 0.08,
+  });
+
+  const suitAccentMat = new THREE.MeshStandardMaterial({
+    color: accentColor,
+    roughness: 0.45,
+    metalness: 0.25,
   });
 
   const suitDarkMat = new THREE.MeshStandardMaterial({
-    color: 0x334155, // Joint gaskets and boots
-    roughness: 0.8,
+    color: 0x1e293b,
+    roughness: 0.78,
     metalness: 0.3,
   });
 
   const goldVisorMat = new THREE.MeshPhysicalMaterial({
-    color: 0xf59e0b, // Gold radiation-reflective visor
+    color: 0xf59e0b,
     metalness: 0.95,
-    roughness: 0.1,
+    roughness: 0.08,
     clearcoat: 1.0,
   });
 
   const backpackMat = new THREE.MeshStandardMaterial({
-    color: 0xe2e8f0,
-    metalness: 0.4,
-    roughness: 0.4,
+    color: 0xcbd5e1,
+    metalness: 0.55,
+    roughness: 0.35,
   });
 
-  // 1. Torso
-  const torsoGeo = new THREE.BoxGeometry(0.7, 0.9, 0.45);
+  // 1. Torso & Waist Belt
+  const torsoGeo = new THREE.CylinderGeometry(0.32, 0.28, 0.78, 12);
   const torso = new THREE.Mesh(torsoGeo, suitWhiteMat);
-  torso.position.set(0, 1.25, 0);
+  torso.position.set(0, 1.24, 0);
   torso.castShadow = true;
-  root.add(torso);
+  bodyGroup.add(torso);
 
-  // Chest console badge
-  const chestGeo = new THREE.BoxGeometry(0.35, 0.3, 0.08);
+  const beltGeo = new THREE.CylinderGeometry(0.30, 0.30, 0.12, 12);
+  const belt = new THREE.Mesh(beltGeo, suitAccentMat);
+  belt.position.set(0, 0.9, 0);
+  bodyGroup.add(belt);
+
+  // Chest Telemetry Pack
+  const chestGeo = new THREE.BoxGeometry(0.34, 0.28, 0.12);
   const chest = new THREE.Mesh(chestGeo, suitDarkMat);
-  chest.position.set(0, 1.35, 0.24);
-  root.add(chest);
+  chest.position.set(0, 1.32, 0.27);
+  bodyGroup.add(chest);
 
-  // 2. Helmet & Gold Visor
-  const helmetGeo = new THREE.SphereGeometry(0.36, 16, 16);
+  const chestLed = new THREE.Mesh(
+    new THREE.BoxGeometry(0.18, 0.05, 0.03),
+    new THREE.MeshBasicMaterial({ color: accentColor })
+  );
+  chestLed.position.set(0, 1.36, 0.33);
+  bodyGroup.add(chestLed);
+
+  // 2. Helmet, Neck Collar & Reflective Gold Visor
+  const collarGeo = new THREE.TorusGeometry(0.24, 0.05, 8, 16);
+  collarGeo.rotateX(Math.PI / 2);
+  const collar = new THREE.Mesh(collarGeo, suitAccentMat);
+  collar.position.set(0, 1.66, 0);
+  bodyGroup.add(collar);
+
+  const helmetGeo = new THREE.SphereGeometry(0.33, 18, 16);
   const helmet = new THREE.Mesh(helmetGeo, suitWhiteMat);
-  helmet.position.set(0, 1.95, 0);
-  root.add(helmet);
+  helmet.position.set(0, 1.93, 0);
+  helmet.castShadow = true;
+  bodyGroup.add(helmet);
 
-  const visorGeo = new THREE.SphereGeometry(0.28, 16, 12, 0, Math.PI, 0, Math.PI / 1.5);
+  const visorGeo = new THREE.SphereGeometry(0.27, 16, 12, 0, Math.PI, 0, Math.PI / 1.45);
   visorGeo.rotateX(Math.PI / 4);
   const visor = new THREE.Mesh(visorGeo, goldVisorMat);
-  visor.position.set(0, 1.95, 0.16);
-  root.add(visor);
+  visor.position.set(0, 1.93, 0.14);
+  bodyGroup.add(visor);
 
-  // Headlight
-  const helmetLight = new THREE.PointLight(0xffffff, 0.8, 12);
-  helmetLight.position.set(0, 2.0, 0.4);
-  root.add(helmetLight);
-
-  // 3. Life Support Backpack (PLSS)
-  const packGeo = new THREE.BoxGeometry(0.6, 0.85, 0.3);
+  // 3. PLSS Backpack + Twin Thruster Nozzles + Jetpack Flames
+  const packGeo = new THREE.BoxGeometry(0.52, 0.76, 0.28);
   const backpack = new THREE.Mesh(packGeo, backpackMat);
-  backpack.position.set(0, 1.3, -0.35);
-  root.add(backpack);
+  backpack.position.set(0, 1.28, -0.34);
+  backpack.castShadow = true;
+  bodyGroup.add(backpack);
 
-  // Backpack Status LED
-  const ledGeo = new THREE.SphereGeometry(0.05, 8, 8);
-  const ledMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
-  const led = new THREE.Mesh(ledGeo, ledMat);
-  led.position.set(0.2, 1.6, -0.5);
-  root.add(led);
+  const stripeGeo = new THREE.BoxGeometry(0.54, 0.1, 0.3);
+  const packStripe = new THREE.Mesh(stripeGeo, suitAccentMat);
+  packStripe.position.set(0, 1.5, -0.34);
+  bodyGroup.add(packStripe);
 
-  // 4. Arms
-  const armGeo = new THREE.CylinderGeometry(0.12, 0.11, 0.65, 8);
-  armGeo.translate(0, -0.3, 0);
+  // Whip antenna
+  const antGeo = new THREE.CylinderGeometry(0.015, 0.02, 0.5, 6);
+  const ant = new THREE.Mesh(antGeo, suitDarkMat);
+  ant.position.set(-0.2, 1.88, -0.4);
+  bodyGroup.add(ant);
+
+  // Twin Jetpack Thruster Flame Cones
+  const jetpackFlames = new THREE.Group();
+  const flameGeo = new THREE.ConeGeometry(0.11, 0.65, 10);
+  flameGeo.rotateX(Math.PI);
+  flameGeo.translate(0, -0.32, 0);
+  const flameMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.9,
+    blending: THREE.AdditiveBlending,
+  });
+  const flameL = new THREE.Mesh(flameGeo, flameMat);
+  flameL.position.set(-0.16, 0.88, -0.42);
+  const flameR = new THREE.Mesh(flameGeo, flameMat);
+  flameR.position.set(0.16, 0.88, -0.42);
+  jetpackFlames.add(flameL, flameR);
+  jetpackFlames.visible = false;
+  bodyGroup.add(jetpackFlames);
+
+  // 4. Articulated Arms with Accent Shoulder Pads
+  const armGeo = new THREE.CylinderGeometry(0.10, 0.09, 0.56, 10);
+  armGeo.translate(0, -0.28, 0);
+  const shoulderGeo = new THREE.SphereGeometry(0.125, 10, 10);
+  const gloveGeo = new THREE.SphereGeometry(0.105, 10, 10);
 
   const leftArm = new THREE.Group();
-  leftArm.position.set(-0.48, 1.6, 0);
+  leftArm.position.set(-0.42, 1.54, 0);
+  const leftShoulder = new THREE.Mesh(shoulderGeo, suitAccentMat);
   const leftArmMesh = new THREE.Mesh(armGeo, suitWhiteMat);
-  const leftGloveGeo = new THREE.SphereGeometry(0.12, 8, 8);
-  const leftGlove = new THREE.Mesh(leftGloveGeo, suitDarkMat);
-  leftGlove.position.set(0, -0.65, 0);
-  leftArm.add(leftArmMesh, leftGlove);
-  root.add(leftArm);
+  const leftGlove = new THREE.Mesh(gloveGeo, suitDarkMat);
+  leftGlove.position.set(0, -0.58, 0);
+  leftArm.add(leftShoulder, leftArmMesh, leftGlove);
+  bodyGroup.add(leftArm);
 
   const rightArm = new THREE.Group();
-  rightArm.position.set(0.48, 1.6, 0);
+  rightArm.position.set(0.42, 1.54, 0);
+  const rightShoulder = new THREE.Mesh(shoulderGeo, suitAccentMat);
   const rightArmMesh = new THREE.Mesh(armGeo, suitWhiteMat);
-  const rightGlove = new THREE.Mesh(leftGloveGeo, suitDarkMat);
-  rightGlove.position.set(0, -0.65, 0);
-  rightArm.add(rightArmMesh, rightGlove);
-  root.add(rightArm);
+  const rightGlove = new THREE.Mesh(gloveGeo, suitDarkMat);
+  rightGlove.position.set(0, -0.58, 0);
+  rightArm.add(rightShoulder, rightArmMesh, rightGlove);
+  bodyGroup.add(rightArm);
 
-  // 5. Legs
-  const legGeo = new THREE.CylinderGeometry(0.14, 0.13, 0.75, 8);
-  legGeo.translate(0, -0.35, 0);
-
-  const bootGeo = new THREE.BoxGeometry(0.22, 0.18, 0.36);
-  bootGeo.translate(0, -0.75, 0.06);
+  // 5. Articulated Legs & Weighted EVA Boots
+  const legGeo = new THREE.CylinderGeometry(0.125, 0.11, 0.68, 10);
+  legGeo.translate(0, -0.34, 0);
+  const bootGeo = new THREE.BoxGeometry(0.21, 0.17, 0.34);
+  bootGeo.translate(0, -0.74, 0.06);
 
   const leftLeg = new THREE.Group();
-  leftLeg.position.set(-0.22, 0.8, 0);
+  leftLeg.position.set(-0.17, 0.82, 0);
   const leftLegMesh = new THREE.Mesh(legGeo, suitWhiteMat);
   const leftBoot = new THREE.Mesh(bootGeo, suitDarkMat);
   leftLeg.add(leftLegMesh, leftBoot);
-  root.add(leftLeg);
+  bodyGroup.add(leftLeg);
 
   const rightLeg = new THREE.Group();
-  rightLeg.position.set(0.22, 0.8, 0);
+  rightLeg.position.set(0.17, 0.82, 0);
   const rightLegMesh = new THREE.Mesh(legGeo, suitWhiteMat);
   const rightBoot = new THREE.Mesh(bootGeo, suitDarkMat);
   rightLeg.add(rightLegMesh, rightBoot);
-  root.add(rightLeg);
+  bodyGroup.add(rightLeg);
 
-  // 6. 3D DIRECTIONAL GUIDE ARROW HOVERING AT FEET
+  // 6. Soft Contact Shadow Disc beneath boots
+  const shadowCanvas = document.createElement('canvas');
+  shadowCanvas.width = 64;
+  shadowCanvas.height = 64;
+  const shCtx = shadowCanvas.getContext('2d')!;
+  const shGrad = shCtx.createRadialGradient(32, 32, 4, 32, 32, 30);
+  shGrad.addColorStop(0, 'rgba(0,0,0,0.52)');
+  shGrad.addColorStop(1, 'rgba(0,0,0,0)');
+  shCtx.fillStyle = shGrad;
+  shCtx.fillRect(0, 0, 64, 64);
+
+  const shadowTex = new THREE.CanvasTexture(shadowCanvas);
+  const shadowGeo = new THREE.PlaneGeometry(1.3, 1.3);
+  shadowGeo.rotateX(-Math.PI / 2);
+  const shadowMat = new THREE.MeshBasicMaterial({
+    map: shadowTex,
+    transparent: true,
+    opacity: 0.75,
+    depthWrite: false,
+  });
+  const contactShadow = new THREE.Mesh(shadowGeo, shadowMat);
+  contactShadow.position.set(0, 0.03, 0);
+  root.add(contactShadow);
+
+  // 7. Floating Nameplate Sprite for Co-op Teammates
+  if (options.labelName) {
+    const labelCanvas = document.createElement('canvas');
+    labelCanvas.width = 256;
+    labelCanvas.height = 64;
+    const lCtx = labelCanvas.getContext('2d')!;
+    lCtx.fillStyle = 'rgba(15, 23, 42, 0.82)';
+    lCtx.beginPath();
+    lCtx.roundRect(16, 10, 224, 44, 14);
+    lCtx.fill();
+    lCtx.strokeStyle = accentHex;
+    lCtx.lineWidth = 3;
+    lCtx.stroke();
+
+    lCtx.fillStyle = '#ffffff';
+    lCtx.font = 'bold 22px sans-serif';
+    lCtx.textAlign = 'center';
+    lCtx.textBaseline = 'middle';
+    lCtx.fillText(options.labelName, 128, 32);
+
+    const labelTex = new THREE.CanvasTexture(labelCanvas);
+    labelTex.colorSpace = THREE.SRGBColorSpace;
+    const spriteMat = new THREE.SpriteMaterial({ map: labelTex, transparent: true, depthTest: false });
+    const sprite = new THREE.Sprite(spriteMat);
+    sprite.position.set(0, 2.7, 0);
+    sprite.scale.set(2.2, 0.55, 1);
+    root.add(sprite);
+  }
+
+  // 8. 3D Directional Guide Arrow Hovering at Local Player Feet
   const guideArrowGroup = new THREE.Group();
   guideArrowGroup.name = 'Objective_Guide_Arrow';
 
-  // Chevron Arrow Shape (points towards +Z in local space)
   const arrowShape = new THREE.Shape();
-  arrowShape.moveTo(0, 1.4); // Arrow tip
-  arrowShape.lineTo(0.5, 0.4);
-  arrowShape.lineTo(0.25, 0.4);
-  arrowShape.lineTo(0.25, -0.6);
-  arrowShape.lineTo(-0.25, -0.6);
-  arrowShape.lineTo(-0.25, 0.4);
-  arrowShape.lineTo(-0.5, 0.4);
+  arrowShape.moveTo(0, 1.45);
+  arrowShape.lineTo(0.45, 0.65);
+  arrowShape.lineTo(0.2, 0.65);
+  arrowShape.lineTo(0.2, -0.35);
+  arrowShape.lineTo(-0.2, -0.35);
+  arrowShape.lineTo(-0.2, 0.65);
+  arrowShape.lineTo(-0.45, 0.65);
   arrowShape.closePath();
 
-  const arrowExtrudeSettings = {
-    depth: 0.06,
+  const arrowGeo = new THREE.ExtrudeGeometry(arrowShape, {
+    depth: 0.05,
     bevelEnabled: true,
     bevelSegments: 2,
     steps: 1,
-    bevelSize: 0.03,
-    bevelThickness: 0.03,
-  };
-
-  const arrowGeo = new THREE.ExtrudeGeometry(arrowShape, arrowExtrudeSettings);
-  arrowGeo.rotateX(-Math.PI / 2); // Flat on ground plane
+    bevelSize: 0.02,
+    bevelThickness: 0.02,
+  });
+  // Rotate +PI/2 around X so Shape +Y tip aligns with +Z matching atan2(dx, dz)
+  arrowGeo.rotateX(Math.PI / 2);
 
   const arrowMat = new THREE.MeshBasicMaterial({
-    color: 0x38bdf8, // Electric cyan glow
+    color: 0x38bdf8,
     transparent: true,
     opacity: 0.85,
     depthWrite: false,
   });
-
   const arrowMesh = new THREE.Mesh(arrowGeo, arrowMat);
-  arrowMesh.position.set(0, 0.08, 0);
+  arrowMesh.position.set(0, 0.1, 0);
   guideArrowGroup.add(arrowMesh);
 
-  // Ground pulse ring beneath arrow
-  const ringGeo = new THREE.RingGeometry(0.8, 0.95, 24);
-  const ringMat = new THREE.MeshBasicMaterial({
-    color: 0x0284c7,
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.45,
-    depthWrite: false,
-  });
-  const groundRing = new THREE.Mesh(ringGeo, ringMat);
-  groundRing.rotation.x = -Math.PI / 2;
-  groundRing.position.y = 0.04;
-  guideArrowGroup.add(groundRing);
-
+  guideArrowGroup.visible = Boolean(options.showGuideArrow);
   root.add(guideArrowGroup);
 
-  // Animation Update Function
-  const updateAnimation = (isMoving: boolean, isJumping: boolean, timeSec: number) => {
-    if (isJumping) {
-      // Floaty Martian leap posture
-      leftArm.rotation.x = -0.7;
-      rightArm.rotation.x = -0.7;
-      leftLeg.rotation.x = 0.4;
-      rightLeg.rotation.x = -0.3;
+  const updateAnimation: AstronautCharacter['updateAnimation'] = ({
+    isMoving,
+    isGrounded,
+    isJetpacking,
+    distanceTraveled,
+    squashY,
+    groundY,
+    timeSec,
+  }) => {
+    // Squash-and-stretch preserving volume
+    const invXZ = 1 / Math.sqrt(Math.max(0.6, squashY));
+    bodyGroup.scale.set(invXZ, squashY, invXZ);
+
+    // Contact shadow stays pinned to ground height beneath actor
+    const altitude = Math.max(0, root.position.y - groundY);
+    contactShadow.position.y = -altitude + 0.035;
+    const shadowScale = Math.max(0.45, 1.0 - altitude * 0.12);
+    contactShadow.scale.set(shadowScale, shadowScale, 1);
+    (contactShadow.material as THREE.MeshBasicMaterial).opacity = Math.max(0.15, 0.75 - altitude * 0.15);
+
+    // Jetpack flames
+    jetpackFlames.visible = isJetpacking;
+    if (isJetpacking) {
+      const flicker = 0.85 + Math.sin(timeSec * 45) * 0.25;
+      jetpackFlames.scale.set(1, flicker, 1);
+    }
+
+    if (!isGrounded) {
+      // Floaty Martian leap / hover posture
+      leftArm.rotation.x = THREE.MathUtils.lerp(leftArm.rotation.x, -0.75, 0.2);
+      rightArm.rotation.x = THREE.MathUtils.lerp(rightArm.rotation.x, -0.75, 0.2);
+      leftLeg.rotation.x = THREE.MathUtils.lerp(leftLeg.rotation.x, 0.35, 0.2);
+      rightLeg.rotation.x = THREE.MathUtils.lerp(rightLeg.rotation.x, -0.25, 0.2);
     } else if (isMoving) {
-      // Stride cadence adapted for Martian low gravity
-      const strideFreq = 7.5;
-      const angle = Math.sin(timeSec * strideFreq) * 0.45;
+      // Distance-synced stride (zero foot skating!)
+      const phase = distanceTraveled * 1.45;
+      const angle = Math.sin(phase) * 0.55;
       leftLeg.rotation.x = angle;
       rightLeg.rotation.x = -angle;
-
-      leftArm.rotation.x = -angle * 0.8;
-      rightArm.rotation.x = angle * 0.8;
+      leftArm.rotation.x = -angle * 0.75;
+      rightArm.rotation.x = angle * 0.75;
     } else {
-      // Resting neutral stance
-      leftLeg.rotation.x = THREE.MathUtils.lerp(leftLeg.rotation.x, 0, 0.15);
-      rightLeg.rotation.x = THREE.MathUtils.lerp(rightLeg.rotation.x, 0, 0.15);
-      leftArm.rotation.x = THREE.MathUtils.lerp(leftArm.rotation.x, 0, 0.15);
-      rightArm.rotation.x = THREE.MathUtils.lerp(rightArm.rotation.x, 0, 0.15);
+      leftLeg.rotation.x = THREE.MathUtils.lerp(leftLeg.rotation.x, 0, 0.18);
+      rightLeg.rotation.x = THREE.MathUtils.lerp(rightLeg.rotation.x, 0, 0.18);
+      leftArm.rotation.x = THREE.MathUtils.lerp(leftArm.rotation.x, 0, 0.18);
+      rightArm.rotation.x = THREE.MathUtils.lerp(rightArm.rotation.x, 0, 0.18);
     }
   };
 
-  // Directional Guide Arrow pointing to active target
-  const updateGuideArrow = (
-    astronautPos: THREE.Vector3,
-    targetPos: { x: number; z: number } | null,
-    timeSec: number
+  const updateGuideArrow: AstronautCharacter['updateGuideArrow'] = (
+    astronautX,
+    astronautZ,
+    targetPos,
+    timeSec
   ) => {
-    if (!targetPos) {
+    if (!options.showGuideArrow || !targetPos) {
+      guideArrowGroup.visible = false;
+      return;
+    }
+
+    const dx = targetPos.x - astronautX;
+    const dz = targetPos.z - astronautZ;
+    const dist = Math.hypot(dx, dz);
+
+    if (dist < 2.2) {
       guideArrowGroup.visible = false;
       return;
     }
 
     guideArrowGroup.visible = true;
-    // Calculate world delta from astronaut to objective target
-    const dx = targetPos.x - astronautPos.x;
-    const dz = targetPos.z - astronautPos.z;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-
-    if (dist < 1.2) {
-      // Already arrived inside target zone
-      guideArrowGroup.visible = false;
-      return;
-    }
-
-    // In local space of astronaut (which is rotated by playerYaw),
-    // we want arrow to point in world direction (dx, dz):
-    // World target angle:
     const worldAngle = Math.atan2(dx, dz);
-    // Relative to astronaut root orientation:
     guideArrowGroup.rotation.y = worldAngle - root.rotation.y;
-
-    // Gentle pulsing float
     const pulse = 1.0 + Math.sin(timeSec * 5.0) * 0.08;
     guideArrowGroup.scale.set(pulse, 1.0, pulse);
   };
 
   return {
     rootGroup: root,
+    bodyMeshGroup: bodyGroup,
     leftArm,
     rightArm,
     leftLeg,
     rightLeg,
-    backpack,
-    helmetLight,
+    jetpackFlames,
+    contactShadow,
     guideArrowGroup,
     updateAnimation,
     updateGuideArrow,

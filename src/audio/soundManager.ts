@@ -239,6 +239,162 @@ class SoundManager {
     osc.start();
     osc.stop(ctx.currentTime + 0.05);
   }
+
+  /**
+   * Liquid water condenser chime
+   */
+  public playWaterCreate() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    [520, 780, 1040].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const t = ctx.currentTime + idx * 0.06;
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.25, t + 0.14);
+      gain.gain.setValueAtTime(0.09, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.17);
+    });
+  }
+
+  /**
+   * Organic sprout chime when planting Martian crops
+   */
+  public playPlantSprout() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    [440, 554.37, 659.25].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const t = ctx.currentTime + idx * 0.05;
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.1, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.24);
+    });
+  }
+
+  /**
+   * Sci-fi technology research unlock chord
+   */
+  public playTechUnlock() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    [587.33, 739.99, 880, 1174.66].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const t = ctx.currentTime + idx * 0.055;
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.11, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.36);
+    });
+  }
+
+  /**
+   * High-energy plasma pulse blaster shot
+   */
+  public playLaserPulse() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(980, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(220, ctx.currentTime + 0.11);
+
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.13);
+  }
+
+  /**
+   * Enemy impact / destruction pop
+   */
+  public playEnemyHit(destroyed = false) {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = destroyed ? 'square' : 'triangle';
+    osc.frequency.setValueAtTime(destroyed ? 260 : 420, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(destroyed ? 65 : 160, ctx.currentTime + (destroyed ? 0.22 : 0.08));
+
+    gain.gain.setValueAtTime(destroyed ? 0.12 : 0.07, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (destroyed ? 0.23 : 0.09));
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + (destroyed ? 0.24 : 0.1));
+  }
+
+  /**
+   * Tactical repair wrench ratchet chime
+   */
+  public playRepairTick() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(520, ctx.currentTime);
+    osc.frequency.setValueAtTime(780, ctx.currentTime + 0.045);
+
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.11);
+  }
+
+  /**
+   * Subtle colony threat invasion chime
+   */
+  public playAlertWarning() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    [0, 0.18].forEach((offset) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const t = ctx.currentTime + offset;
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(420, t);
+      osc.frequency.linearRampToValueAtTime(300, t + 0.14);
+      gain.gain.setValueAtTime(0.07, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.16);
+    });
+  }
 }
 
 export const soundManager = new SoundManager();
