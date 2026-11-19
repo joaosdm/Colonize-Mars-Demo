@@ -8,12 +8,16 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { MarsSurfaceScene, InteractiveTriggerZone } from './graphics/MarsSurfaceScene';
+import type { ResourceNodeKind } from './graphics/colonyStructures';
 import { MarsColonyHUD } from './components/MarsColonyHUD';
 import { TouchControls } from './components/TouchControls';
 import { FloatingBillboards, ResourcePopupItem } from './components/FloatingBillboards';
 import { CutsceneOverlay } from './components/CutsceneOverlay';
 import { TitleLobbyOverlay } from './components/TitleLobbyOverlay';
 import { TechTreeModal } from './components/TechTreeModal';
+import { MissionControlModal } from './components/MissionControlModal';
+import { ColonyWorkshopModal, WorkshopTab } from './components/ColonyWorkshopModal';
+import { OrbitalExplorerModal } from './components/OrbitalExplorerModal';
 import { PauseModal, VictoryModal, GameOverModal } from './components/StatusModals';
 import { soundManager } from './audio/soundManager';
 import {
@@ -32,6 +36,16 @@ import {
   stepColonyDustStorm,
   forceTriggerDustStorm,
   progressContract,
+  applyMissionControlProgress,
+  rerollColonyMissionControl,
+  excavateCraterAt,
+  plantDomeCrop,
+  harvestDomeCrop,
+  consumeFoodRation,
+  runColonyRefineryRecipe,
+  craftColonyWeapon,
+  equipColonyWeapon,
+  discoverPlanetarySite,
   updateColonyTick,
 } from './sim/marsColonyLogic';
 import {
@@ -39,20 +53,55 @@ import {
   PlasmaBolt,
   EnemyKind,
   createEnemy,
-  createPlasmaBolt,
+  createWeaponVolley,
   stepEnemiesAndCombat,
 } from './sim/marsEnemies';
+import { getWeaponDef, WeaponId } from './sim/marsChemistry';
+import type { CropTypeId } from './sim/marsWorld';
 import {
   AstronautRoleId,
   computeActivePlayerStats,
   getAstronautRole,
 } from './sim/astronautRoles';
 import { computeCoopSiteActionBoost } from './sim/coopActionBoost';
+import {
+  AdaptivePerformanceMonitor,
+  DeviceProfile,
+  QualityPreset,
+  TouchControlsMode,
+  readBrowserDeviceProfile,
+  resolveQualityConfig,
+  shouldShowTouchControls,
+} from './sim/devicePerformance';
 import { CoopClient } from './net/coopClient';
 import { RemotePlayerState } from './net/coopProtocol';
 
 type GameState = 'title' | 'cutscene' | 'playing' | 'paused' | 'gameover';
 type InputDeviceType = 'keyboard' | 'touch' | 'gamepad';
+
+function readStoredQualityPreset(): QualityPreset {
+  try {
+    const saved = window.localStorage.getItem('mars_quality_preset');
+    if (saved === 'auto' || saved === 'low' || saved === 'medium' || saved === 'high') {
+      return saved;
+    }
+  } catch {
+    // Ignore storage restrictions inside sandboxed web game portal iframes
+  }
+  return 'auto';
+}
+
+function readStoredTouchMode(): TouchControlsMode {
+  try {
+    const saved = window.localStorage.getItem('mars_touch_mode');
+    if (saved === 'auto' || saved === 'always' || saved === 'hidden') {
+      return saved;
+    }
+  } catch {
+    // Ignore storage restrictions
+  }
+  return 'auto';
+}
 
 export default function App() {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -71,6 +120,9 @@ export default function App() {
   const turretFiredAtRef = useRef<{ x: number; y: number; z: number } | null>(null);
 
   const isTechModalOpenRef = useRef<boolean>(false);
+  const isMissionControlOpenRef = useRef<boolean>(false);
+  const isWorkshopOpenRef = useRef<boolean>(false);
+  const isOrbitalOpenRef = useRef<boolean>(false);
   const isCoopModeRef = useRef<boolean>(false);
   const coopSelfIdRef = useRef<string | null>(null);
   const coopPlayersRef = useRef<RemotePlayerState[]>([]);
@@ -83,6 +135,7 @@ export default function App() {
   const [gameState, setGameState] = useState<GameState>('title');
   const [selectedRole, setSelectedRole] = useState<AstronautRoleId>('engineer');
   const [hudColonyState, setHudColonyState] = useState<ColonyState>(colonyStateRef.current);
+  const [hudPlayerPos, setHudPlayerPos] = useState<{ x: number; z: number }>({ x: 0, z: 6.5 });
   const [jetpackFuel, setJetpackFuel] = useState<number>(100);
   const [activeEnemiesCount, setActiveEnemiesCount] = useState<number>(0);
   const [activeTrigger, setActiveTrigger] = useState<InteractiveTriggerZone | null>(null);
@@ -93,8 +146,28 @@ export default function App() {
   const [isVictory, setIsVictory] = useState<boolean>(false);
   const [gameOverReason, setGameOverReason] = useState<string>('');
   const [isTechModalOpen, setIsTechModalOpen] = useState<boolean>(false);
+  const [isMissionControlOpen, setIsMissionControlOpen] = useState<boolean>(false);
+  const [isWorkshopOpen, setIsWorkshopOpen] = useState<boolean>(false);
+  const [workshopTab, setWorkshopTab] = useState<WorkshopTab>('refinery');
+  const [isOrbitalOpen, setIsOrbitalOpen] = useState<boolean>(false);
   const [activeInputDevice, setActiveInputDevice] = useState<InputDeviceType>('keyboard');
-  const [isTouchSupported, setIsTouchSupported] = useState<boolean>(false);
+  const [deviceProfile, setDeviceProfile] = useState<DeviceProfile>(() => readBrowserDeviceProfile());
+  const [qualityPreset, setQualityPreset] = useState<QualityPreset>(() => readStoredQualityPreset());
+  const [touchControlsMode, setTouchControlsMode] = useState<TouchControlsMode>(() => readStoredTouchMode());
+  const perfMonitorRef = useRef<AdaptivePerformanceMonitor>(
+    new AdaptivePerformanceMonitor(1.25, 0.75, 1.75, true)
+  );
+  const hudSyncIntervalMsRef = useRef<number>(125);
+
+  const resolvedQualityConfig = resolveQualityConfig(
+    qualityPreset,
+    deviceProfile,
+    sceneRef.current?.isSoftwareGl ?? false
+  );
+  hudSyncIntervalMsRef.current = resolvedQualityConfig.hudSyncIntervalMs;
+
+  const isTouchControlsVisible = shouldShowTouchControls(touchControlsMode, deviceProfile);
+  const isMobileLayout = deviceProfile.isMobile || deviceProfile.isCompactScreen || isTouchControlsVisible;
 
   // Co-op & Event Banner States
   const [coopRoomCode, setCoopRoomCode] = useState<string | null>(null);
@@ -119,10 +192,56 @@ export default function App() {
     setGameState(next);
   }, []);
 
-  const setSyncedTechModal = useCallback((open: boolean) => {
-    isTechModalOpenRef.current = open;
-    setIsTechModalOpen(open);
+  const closeAllOverlays = useCallback(() => {
+    isTechModalOpenRef.current = false;
+    setIsTechModalOpen(false);
+    isMissionControlOpenRef.current = false;
+    setIsMissionControlOpen(false);
+    isWorkshopOpenRef.current = false;
+    setIsWorkshopOpen(false);
+    isOrbitalOpenRef.current = false;
+    setIsOrbitalOpen(false);
   }, []);
+
+  const setSyncedTechModal = useCallback(
+    (open: boolean) => {
+      if (open) closeAllOverlays();
+      isTechModalOpenRef.current = open;
+      setIsTechModalOpen(open);
+    },
+    [closeAllOverlays]
+  );
+
+  const setSyncedMissionControlModal = useCallback(
+    (open: boolean) => {
+      if (open) closeAllOverlays();
+      isMissionControlOpenRef.current = open;
+      setIsMissionControlOpen(open);
+    },
+    [closeAllOverlays]
+  );
+
+  const setSyncedWorkshopModal = useCallback(
+    (open: boolean, tab?: WorkshopTab) => {
+      if (open) closeAllOverlays();
+      if (tab) setWorkshopTab(tab);
+      isWorkshopOpenRef.current = open;
+      setIsWorkshopOpen(open);
+    },
+    [closeAllOverlays]
+  );
+
+  const setSyncedOrbitalModal = useCallback(
+    (open: boolean) => {
+      if (open) {
+        closeAllOverlays();
+        soundManager.playOrbitalLaunch();
+      }
+      isOrbitalOpenRef.current = open;
+      setIsOrbitalOpen(open);
+    },
+    [closeAllOverlays]
+  );
 
   const showBanner = useCallback((text: string) => {
     setCoopEventBanner(text);
@@ -137,10 +256,48 @@ export default function App() {
       : null;
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-      setIsTouchSupported(isTouch);
-      if (isTouch) setActiveInputDevice('touch');
+    const syncDevice = () => {
+      const next = readBrowserDeviceProfile();
+      setDeviceProfile(next);
+      if (next.isTouchPrimary) setActiveInputDevice('touch');
+    };
+    syncDevice();
+    window.addEventListener('resize', syncDevice);
+    window.addEventListener('orientationchange', syncDevice);
+    return () => {
+      window.removeEventListener('resize', syncDevice);
+      window.removeEventListener('orientationchange', syncDevice);
+    };
+  }, []);
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    const cfg = resolveQualityConfig(qualityPreset, deviceProfile, scene.isSoftwareGl);
+    scene.applyQualityConfig(cfg);
+    perfMonitorRef.current.reconfigure(
+      Math.min(window.devicePixelRatio || 1, cfg.pixelRatioCap),
+      cfg.minDynamicPixelRatio,
+      Math.min(window.devicePixelRatio || 1, cfg.pixelRatioCap),
+      qualityPreset === 'auto' && !scene.isSoftwareGl
+    );
+  }, [qualityPreset, deviceProfile]);
+
+  const handleChangeQualityPreset = useCallback((next: QualityPreset) => {
+    setQualityPreset(next);
+    try {
+      window.localStorage.setItem('mars_quality_preset', next);
+    } catch {
+      // Ignore storage errors inside sandboxed iframes
+    }
+  }, []);
+
+  const handleChangeTouchControlsMode = useCallback((next: TouchControlsMode) => {
+    setTouchControlsMode(next);
+    try {
+      window.localStorage.setItem('mars_touch_mode', next);
+    } catch {
+      // Ignore storage errors
     }
   }, []);
 
@@ -153,7 +310,7 @@ export default function App() {
     return () => clearInterval(timer);
   }, [resourcePopups.length]);
 
-  const spawnPickupPopup = useCallback((type: 'regolith' | 'ice', worldPos: THREE.Vector3) => {
+  const spawnPickupPopup = useCallback((type: ResourceNodeKind, worldPos: THREE.Vector3) => {
     const scene = sceneRef.current;
     let screenX = window.innerWidth / 2;
     let screenY = window.innerHeight / 2;
@@ -164,13 +321,21 @@ export default function App() {
         screenY = (-(proj.y * 0.5) + 0.5) * window.innerHeight;
       }
     }
-    const isReg = type === 'regolith';
+    const styleMap: Record<ResourceNodeKind, { text: string; color: string }> = {
+      regolith: { text: '+1 Regolito', color: '#f59e0b' },
+      ice: { text: '+1 Gelo', color: '#38bdf8' },
+      iron: { text: '+1 Ferro (Fe)', color: '#fb923c' },
+      titanium: { text: '+1 Titânio (Ti)', color: '#c084fc' },
+      silicon: { text: '+1 Silício (Si)', color: '#2dd4bf' },
+      sulfur: { text: '+1 Enxofre (S)', color: '#facc15' },
+    };
+    const style = styleMap[type] || styleMap.regolith;
     setResourcePopups((prev) => [
       ...prev.slice(-6),
       {
         id: `pop-${performance.now()}-${Math.random()}`,
-        text: isReg ? '+1 Regolito' : '+1 Gelo',
-        color: isReg ? '#f59e0b' : '#38bdf8',
+        text: style.text,
+        color: style.color,
         screenX,
         screenY,
         timestamp: performance.now(),
@@ -178,9 +343,9 @@ export default function App() {
     ]);
   }, []);
 
-  // Resource Collection
+  // Resource & Mineral Vein Collection
   const handleResourceCollected = useCallback(
-    (resourceId: string, type: 'regolith' | 'ice', worldPos: THREE.Vector3) => {
+    (resourceId: string, type: ResourceNodeKind, worldPos: THREE.Vector3) => {
       soundManager.playResourcePickup(type);
       spawnPickupPopup(type, worldPos);
 
@@ -194,6 +359,10 @@ export default function App() {
         ...prev,
         regolith: type === 'regolith' ? prev.regolith + 1 : prev.regolith,
         waterIce: type === 'ice' ? prev.waterIce + 1 : prev.waterIce,
+        iron: type === 'iron' ? prev.iron + 1 : prev.iron,
+        titanium: type === 'titanium' ? prev.titanium + 1 : prev.titanium,
+        silicon: type === 'silicon' ? prev.silicon + 1 : prev.silicon,
+        sulfur: type === 'sulfur' ? prev.sulfur + 1 : prev.sulfur,
       };
       if (type === 'regolith') {
         const res = progressContract(next, 'collect-regolith', 1);
@@ -201,6 +370,18 @@ export default function App() {
         if (res.completedContractTitle) {
           soundManager.playMissionComplete();
           showBanner(`Contrato concluído: ${res.completedContractTitle}`);
+        }
+      }
+      if (type === 'regolith' || type === 'ice') {
+        const mcRes = applyMissionControlProgress(
+          next,
+          type === 'regolith' ? 'gather-regolith' : 'gather-ice',
+          1
+        );
+        next = mcRes.state;
+        if (mcRes.completedDailyTitles.length > 0) {
+          soundManager.playMissionComplete();
+          showBanner(`Objetivo Diário Concluído: ${mcRes.completedDailyTitles[0]}`);
         }
       }
       colonyStateRef.current = next;
@@ -241,6 +422,10 @@ export default function App() {
         setSyncedTechModal(true);
         return;
       }
+      if (triggerId === 'trigger-open-mission-control') {
+        setSyncedMissionControlModal(true);
+        return;
+      }
 
       // Repair damaged module
       if (triggerId.startsWith('trigger-repair-')) {
@@ -267,6 +452,12 @@ export default function App() {
             if (prog.completedContractTitle) {
               soundManager.playMissionComplete();
               showBanner(`Contrato concluído: ${prog.completedContractTitle}`);
+            }
+            const mcProg = applyMissionControlProgress(next, 'repair-modules', 1);
+            next = mcProg.state;
+            if (mcProg.completedDailyTitles.length > 0) {
+              soundManager.playMissionComplete();
+              showBanner(`Objetivo Diário Concluído: ${mcProg.completedDailyTitles[0]}`);
             }
           }
           colonyStateRef.current = next;
@@ -311,19 +502,30 @@ export default function App() {
         }
       }
     },
-    [handleCompletedProjects, setSyncedTechModal, showBanner]
+    [handleCompletedProjects, setSyncedMissionControlModal, setSyncedTechModal, showBanner]
   );
 
-  // Fire Plasma Pulse ([F], Left-Click, Touch Pulse, Gamepad B)
+  // Fire Equipped Weapon ([F], Left-Click, Touch Pulse, Gamepad B)
   const firePlasmaPulse = useCallback((customDirX?: number, customDirZ?: number) => {
-    if (gameStateRef.current !== 'playing' || isTechModalOpenRef.current) return;
+    if (
+      gameStateRef.current !== 'playing' ||
+      isTechModalOpenRef.current ||
+      isMissionControlOpenRef.current ||
+      isWorkshopOpenRef.current ||
+      isOrbitalOpenRef.current
+    ) {
+      return;
+    }
     const scene = sceneRef.current;
     if (!scene) return;
 
     const now = performance.now();
     const roleMods = getAstronautRole(selectedRoleRef.current).modifiers;
     const hasMk2 = colonyStateRef.current.unlockedTechs.includes('tech-pulse');
-    const cooldownMs = Math.round((hasMk2 ? 170 : 270) * roleMods.plasmaCooldownMultiplier);
+    const weaponDef = getWeaponDef(colonyStateRef.current.equippedWeapon);
+    const cooldownMs = Math.round(
+      weaponDef.cooldownMs * (hasMk2 ? 0.78 : 1.0) * roleMods.plasmaCooldownMultiplier
+    );
     if (now - lastShotTimeRef.current < cooldownMs) return;
     lastShotTimeRef.current = now;
 
@@ -332,7 +534,7 @@ export default function App() {
         ? { dirX: customDirX, dirZ: customDirZ }
         : scene.getSmartAimDirection(enemiesRef.current);
 
-    soundManager.playLaserPulse();
+    soundManager.playWeaponFire(weaponDef.id);
 
     if (isCoopModeRef.current && coopClientRef.current) {
       coopClientRef.current.emitShoot(
@@ -345,18 +547,139 @@ export default function App() {
       return;
     }
 
-    const bolt = createPlasmaBolt(
-      scene.playerPos.x,
-      scene.playerPos.y + 1.05,
-      scene.playerPos.z,
-      dir.dirX,
-      dir.dirZ,
-      hasMk2,
-      false,
-      roleMods.combatDamageMultiplier
-    );
-    boltsRef.current.push(bolt);
+    const volley = createWeaponVolley({
+      x: scene.playerPos.x,
+      y: scene.playerPos.y + 1.05,
+      z: scene.playerPos.z,
+      dirX: dir.dirX,
+      dirZ: dir.dirZ,
+      weaponId: weaponDef.id,
+      hasPulseMk2: hasMk2,
+      damageMultiplier: roleMods.combatDamageMultiplier,
+    });
+    boltsRef.current.push(...volley);
   }, []);
+
+  // Excavate 3D Crater & Extract Biome Minerals ([G])
+  const handleExcavateCrater = useCallback(() => {
+    if (gameStateRef.current !== 'playing') return;
+    const scene = sceneRef.current;
+    if (!scene) return;
+    const res = excavateCraterAt(
+      colonyStateRef.current,
+      scene.playerPos.x,
+      scene.playerPos.z
+    );
+    if (!res.ok) {
+      showBanner(res.summaryText);
+      return;
+    }
+    colonyStateRef.current = res.state;
+    forceHudSyncRef.current = true;
+    setHudColonyState(res.state);
+    soundManager.playCraterDrill();
+    scene.emitExcavationBurst(scene.playerPos.x, scene.playerPos.z);
+    showBanner(res.summaryText);
+  }, [showBanner]);
+
+  // Chemical Refinery Extraction
+  const handleRunRefineryRecipe = useCallback(
+    (recipeId: string) => {
+      const res = runColonyRefineryRecipe(colonyStateRef.current, recipeId);
+      if (res.ok) {
+        soundManager.playRefinerySynth();
+        colonyStateRef.current = res.state;
+        forceHudSyncRef.current = true;
+        setHudColonyState(res.state);
+      }
+      showBanner(res.label);
+    },
+    [showBanner]
+  );
+
+  // Craft & Equip Weapons
+  const handleCraftWeapon = useCallback(
+    (weaponId: WeaponId) => {
+      const res = craftColonyWeapon(colonyStateRef.current, weaponId);
+      if (res.crafted) {
+        soundManager.playBuildComplete();
+        colonyStateRef.current = res.state;
+        forceHudSyncRef.current = true;
+        setHudColonyState(res.state);
+      }
+      showBanner(res.label);
+    },
+    [showBanner]
+  );
+
+  const handleEquipWeapon = useCallback(
+    (weaponId: WeaponId) => {
+      const res = equipColonyWeapon(colonyStateRef.current, weaponId);
+      if (res.equipped) {
+        soundManager.playClick();
+        colonyStateRef.current = res.state;
+        forceHudSyncRef.current = true;
+        setHudColonyState(res.state);
+        showBanner(`Arma equipada: ${getWeaponDef(weaponId).name}`);
+      }
+    },
+    [showBanner]
+  );
+
+  // Glass-Dome Food Farming & Consumption
+  const handlePlantDomeCrop = useCallback(
+    (bedIndex: number, cropId: CropTypeId) => {
+      const res = plantDomeCrop(colonyStateRef.current, bedIndex, cropId);
+      if (res.ok) {
+        soundManager.playPlantSprout();
+        colonyStateRef.current = res.state;
+        forceHudSyncRef.current = true;
+        setHudColonyState(res.state);
+      }
+      showBanner(res.label);
+    },
+    [showBanner]
+  );
+
+  const handleHarvestDomeCrop = useCallback(
+    (bedIndex: number) => {
+      const res = harvestDomeCrop(colonyStateRef.current, bedIndex);
+      if (res.ok) {
+        soundManager.playBuildComplete();
+        colonyStateRef.current = res.state;
+        forceHudSyncRef.current = true;
+        setHudColonyState(res.state);
+      }
+      showBanner(res.label);
+    },
+    [showBanner]
+  );
+
+  const handleConsumeFood = useCallback(() => {
+    const res = consumeFoodRation(colonyStateRef.current);
+    if (res.ok) {
+      soundManager.playEatRation();
+      colonyStateRef.current = res.state;
+      forceHudSyncRef.current = true;
+      setHudColonyState(res.state);
+    }
+    showBanner(res.label);
+  }, [showBanner]);
+
+  // Orbital Planetary Site Discovery
+  const handleScanOrbitalSite = useCallback(
+    (siteId: string) => {
+      const res = discoverPlanetarySite(colonyStateRef.current, siteId);
+      if (res.discovered) {
+        soundManager.playMissionComplete();
+        colonyStateRef.current = res.state;
+        forceHudSyncRef.current = true;
+        setHudColonyState(res.state);
+      }
+      showBanner(res.label);
+    },
+    [showBanner]
+  );
 
   // Tech Research (Timed, accelerated by Scientist class)
   const handleResearchTech = useCallback(
@@ -381,6 +704,25 @@ export default function App() {
     [showBanner]
   );
 
+  // Reroll Daily Objectives in Habitat Mission Control Terminal
+  const handleRerollMissionControl = useCallback(() => {
+    if (isCoopModeRef.current && coopClientRef.current) {
+      soundManager.playClick();
+      coopClientRef.current.emitMissionControlReroll();
+      return;
+    }
+    const res = rerollColonyMissionControl(colonyStateRef.current);
+    if (res.rerolled) {
+      soundManager.playClick();
+      colonyStateRef.current = res.state;
+      forceHudSyncRef.current = true;
+      setHudColonyState(res.state);
+      showBanner('Mission Control: 3 novos objetivos diários gerados!');
+    } else if (res.reason) {
+      showBanner(res.reason);
+    }
+  }, [showBanner]);
+
   // Instant Action (E / Enter / Touch Action / Gamepad X)
   const handleInstantAction = useCallback(() => {
     lastActionPressMsRef.current = performance.now();
@@ -391,10 +733,28 @@ export default function App() {
       setSyncedTechModal(true);
       return;
     }
+    if (trigger.id === 'trigger-open-mission-control') {
+      setSyncedMissionControlModal(true);
+      return;
+    }
+    if (trigger.id === 'trigger-open-workshop') {
+      setSyncedWorkshopModal(true, 'crops');
+      return;
+    }
+    if (trigger.id === 'trigger-open-orbit') {
+      setSyncedOrbitalModal(true);
+      return;
+    }
     if (trigger.hasRequirements) {
       handleTriggerAction(trigger.id);
     }
-  }, [handleTriggerAction, setSyncedTechModal]);
+  }, [
+    handleTriggerAction,
+    setSyncedMissionControlModal,
+    setSyncedOrbitalModal,
+    setSyncedTechModal,
+    setSyncedWorkshopModal,
+  ]);
 
   // Toggle Threats vs Peaceful Mode mid-game
   const handleToggleThreats = useCallback(() => {
@@ -436,6 +796,7 @@ export default function App() {
       setHudColonyState(colonyStateRef.current);
       setIsVictory(false);
       setSyncedTechModal(false);
+      setSyncedMissionControlModal(false);
 
       const scene = sceneRef.current;
       if (scene) {
@@ -453,7 +814,7 @@ export default function App() {
         setSyncedGameState(skipCutscene ? 'playing' : 'cutscene');
       }
     },
-    [setSyncedGameState, setSyncedTechModal, threatsEnabledPref]
+    [setSyncedGameState, setSyncedMissionControlModal, setSyncedTechModal, threatsEnabledPref]
   );
 
   const handleExitToLobby = useCallback(() => {
@@ -468,8 +829,9 @@ export default function App() {
     setCoopPlayers([]);
     setIsVictory(false);
     setSyncedTechModal(false);
+    setSyncedMissionControlModal(false);
     setSyncedGameState('title');
-  }, [setSyncedGameState, setSyncedTechModal]);
+  }, [setSyncedGameState, setSyncedMissionControlModal, setSyncedTechModal]);
 
   // Cooperative WebSocket Client
   useEffect(() => {
@@ -609,14 +971,21 @@ export default function App() {
   const onTriggerRef = useRef(handleTriggerAction);
   onTriggerRef.current = handleTriggerAction;
   const onOpenTechRef = useRef(() => setSyncedTechModal(true));
+  const onOpenMissionControlRef = useRef(() => setSyncedMissionControlModal(true));
+  const onOpenWorkshopRef = useRef(() => setSyncedWorkshopModal(true, 'crops'));
+  const onOpenOrbitalRef = useRef(() => setSyncedOrbitalModal(true));
   const onCanvasShootRef = useRef(firePlasmaPulse);
   onCanvasShootRef.current = firePlasmaPulse;
 
   useEffect(() => {
     if (!mountRef.current) return;
 
+    const initialProfile = readBrowserDeviceProfile();
+    const storedPreset = readStoredQualityPreset();
+    const initialQuality = resolveQualityConfig(storedPreset, initialProfile, false);
     const scene = new MarsSurfaceScene({
       container: mountRef.current,
+      qualityConfig: initialQuality,
       onCutsceneEnd: () => {
         setSyncedGameState('playing');
         soundManager.playMissionComplete();
@@ -624,13 +993,45 @@ export default function App() {
       onResourceCollected: (id, type, pos) => onResourceRef.current(id, type, pos),
       onTriggerCompleted: (id) => onTriggerRef.current(id),
       onOpenTechModal: () => onOpenTechRef.current(),
+      onOpenMissionControl: () => onOpenMissionControlRef.current(),
+      onOpenWorkshop: () => onOpenWorkshopRef.current(),
+      onOpenOrbital: () => onOpenOrbitalRef.current(),
       onCanvasShoot: (dx, dz) => onCanvasShootRef.current(dx, dz),
     });
     sceneRef.current = scene;
+    const syncedQuality = resolveQualityConfig(storedPreset, initialProfile, scene.isSoftwareGl);
+    scene.applyQualityConfig(syncedQuality);
+    perfMonitorRef.current.reconfigure(
+      Math.min(window.devicePixelRatio || 1, syncedQuality.pixelRatioCap),
+      syncedQuality.minDynamicPixelRatio,
+      Math.min(window.devicePixelRatio || 1, syncedQuality.pixelRatioCap),
+      storedPreset === 'auto' && !scene.isSoftwareGl
+    );
 
     const params = new URLSearchParams(window.location.search);
     if (params.get('autostart') === '1') {
       startSoloMission(true);
+      if (params.get('habitat') === '1') {
+        const seededHab: ColonyState = {
+          ...colonyStateRef.current,
+          buildings: {
+            ...colonyStateRef.current.buildings,
+            moxie: true,
+            solarPanels: true,
+            habitat: true,
+          },
+          buildingHealth: {
+            ...colonyStateRef.current.buildingHealth,
+            moxie: 68,
+            solarPanels: 54,
+            habitat: 100,
+          },
+          oxygenMax: 125,
+          oxygen: 125,
+        };
+        colonyStateRef.current = seededHab;
+        setHudColonyState(seededHab);
+      }
       if (params.get('storm') === '1') {
         const seeded = {
           ...colonyStateRef.current,
@@ -708,14 +1109,51 @@ export default function App() {
         return;
       }
 
+      if (e.code === 'KeyC' && curState === 'playing') {
+        setSyncedMissionControlModal(!isMissionControlOpenRef.current);
+        return;
+      }
+
+      if (e.code === 'KeyB' && curState === 'playing') {
+        setSyncedWorkshopModal(!isWorkshopOpenRef.current);
+        return;
+      }
+
+      if (e.code === 'KeyV' && curState === 'playing') {
+        setSyncedOrbitalModal(!isOrbitalOpenRef.current);
+        return;
+      }
+
+      if (e.code === 'KeyG' && curState === 'playing' && !isOrbitalOpenRef.current) {
+        handleExcavateCrater();
+        return;
+      }
+
+      if (e.code === 'KeyH' && curState === 'playing') {
+        handleConsumeFood();
+        return;
+      }
+
+      if (curState === 'playing' && !isOrbitalOpenRef.current) {
+        if (e.code === 'Digit1') handleEquipWeapon('pulse-pistol');
+        else if (e.code === 'Digit2') handleEquipWeapon('plasma-rifle');
+        else if (e.code === 'Digit3') handleEquipWeapon('ion-shotgun');
+        else if (e.code === 'Digit4') handleEquipWeapon('titanium-railgun');
+      }
+
       if (e.code === 'KeyM') {
         handleToggleMute();
         return;
       }
 
       if (e.code === 'Escape' || e.code === 'KeyP') {
-        if (isTechModalOpenRef.current) {
-          setSyncedTechModal(false);
+        if (
+          isTechModalOpenRef.current ||
+          isMissionControlOpenRef.current ||
+          isWorkshopOpenRef.current ||
+          isOrbitalOpenRef.current
+        ) {
+          closeAllOverlays();
         } else if (curState === 'playing') {
           setSyncedGameState('paused');
         } else if (curState === 'paused') {
@@ -729,7 +1167,7 @@ export default function App() {
         return;
       }
 
-      if (curState === 'playing') {
+      if (curState === 'playing' && !isOrbitalOpenRef.current) {
         if (e.code === 'Space') {
           if (!jumpHeldRef.current) {
             jumpJustPressedRef.current = true;
@@ -777,12 +1215,19 @@ export default function App() {
       window.removeEventListener('blur', handleBlur);
     };
   }, [
+    closeAllOverlays,
     firePlasmaPulse,
+    handleConsumeFood,
+    handleEquipWeapon,
+    handleExcavateCrater,
     handleInstantAction,
     handleSkipCutscene,
     handleToggleMute,
     setSyncedGameState,
+    setSyncedMissionControlModal,
+    setSyncedOrbitalModal,
     setSyncedTechModal,
+    setSyncedWorkshopModal,
     startSoloMission,
   ]);
 
@@ -805,6 +1250,12 @@ export default function App() {
         return;
       }
 
+      // Pause WebGL rendering & simulation when tab/portal iframe is hidden to save battery & CPU
+      if (document.hidden) {
+        animId = window.setTimeout(() => tick(performance.now()), 250);
+        return;
+      }
+
       const curGameState = gameStateRef.current;
 
       if (curGameState === 'title') {
@@ -824,9 +1275,20 @@ export default function App() {
       }
 
       if (curGameState === 'paused' || curGameState === 'gameover') {
-        scene.render();
-        animId = scene.scheduleNextFrame(tick);
+        animId = window.setTimeout(() => tick(performance.now()), 180);
         return;
+      }
+
+      // Pause surface WebGL rendering while piloting the Starship in Orbital Explorer
+      if (isOrbitalOpenRef.current) {
+        animId = window.setTimeout(() => tick(performance.now()), 180);
+        return;
+      }
+
+      // Dynamic resolution scaling for smooth 60FPS on mobile & online game platforms
+      const nextDynamicDpr = perfMonitorRef.current.recordFrame(rawDt);
+      if (nextDynamicDpr !== null) {
+        scene.setDynamicPixelRatio(nextDynamicDpr);
       }
 
       // Gamepad + Keyboard + Touch Polling
@@ -1018,11 +1480,11 @@ export default function App() {
             const angle = Math.random() * Math.PI * 2;
             const r = 33 + Math.random() * 6;
             const kinds: EnemyKind[] =
-              workingState.stage >= 7
-                ? ['crawler', 'drone', 'brute']
-                : workingState.stage >= 4
-                ? ['crawler', 'drone']
-                : ['crawler'];
+              workingState.stage >= 6
+                ? ['crawler', 'drone', 'stalker', 'brute']
+                : workingState.stage >= 3
+                ? ['crawler', 'drone', 'stalker']
+                : ['crawler', 'stalker'];
             const kind = kinds[Math.floor(Math.random() * kinds.length)];
             const newEnemy = createEnemy(
               kind,
@@ -1037,6 +1499,8 @@ export default function App() {
                 ? 'Colosso de Basalto'
                 : kind === 'drone'
                 ? 'Drone Pirata'
+                : kind === 'stalker'
+                ? 'Perseguidor Ácido'
                 : 'Rastejador de Sílica';
             showBanner(`Alerta de Invasão: ${label} detectado!`);
             enemySpawnTimerRef.current = Math.max(12, 22 - workingState.stage);
@@ -1079,6 +1543,9 @@ export default function App() {
                 nextKillState.regolith += k.regolith;
                 nextKillState.waterIce += k.ice;
                 nextKillState.biomass += k.biomass;
+                nextKillState.iron += k.iron;
+                nextKillState.titanium += k.titanium;
+                nextKillState.sulfur += k.sulfur;
                 nextKillState.enemiesDefeated += 1;
                 const prog = progressContract(nextKillState, 'kill-enemies', 1);
                 nextKillState = prog.state;
@@ -1086,6 +1553,16 @@ export default function App() {
                   soundManager.playMissionComplete();
                   showBanner(`Contrato concluído: ${prog.completedContractTitle}`);
                 }
+              }
+              const mcEnemyRes = applyMissionControlProgress(
+                nextKillState,
+                'defeat-enemies',
+                step.result.kills.length
+              );
+              nextKillState = mcEnemyRes.state;
+              if (mcEnemyRes.completedDailyTitles.length > 0) {
+                soundManager.playMissionComplete();
+                showBanner(`Objetivo Diário Concluído: ${mcEnemyRes.completedDailyTitles[0]}`);
               }
               workingState = nextKillState;
               forceHudSyncRef.current = true;
@@ -1122,11 +1599,12 @@ export default function App() {
         setSyncedGameState('gameover');
       }
 
-      // Throttled React HUD Sync (~8Hz or immediate on discrete change)
-      if (forceHudSyncRef.current || now - lastHudSyncMs >= 120) {
+      // Throttled React HUD Sync (scaled by device performance tier or immediate on discrete change)
+      if (forceHudSyncRef.current || now - lastHudSyncMs >= hudSyncIntervalMsRef.current) {
         forceHudSyncRef.current = false;
         lastHudSyncMs = now;
         setHudColonyState(colonyStateRef.current);
+        setHudPlayerPos({ x: scene.playerPos.x, z: scene.playerPos.z });
         setJetpackFuel(scene.jetpackFuel);
         setActiveEnemiesCount(enemiesRef.current.length);
         if (scene.currentTrigger) {
@@ -1171,10 +1649,20 @@ export default function App() {
     };
   }, [firePlasmaPulse, handleCompletedProjects, handleInstantAction, setSyncedGameState, showBanner]);
 
+  const handleCycleWeapon = useCallback(() => {
+    const crafted = colonyStateRef.current.craftedWeapons;
+    if (crafted.length <= 1) return;
+    const idx = crafted.indexOf(colonyStateRef.current.equippedWeapon);
+    const nextWeapon = crafted[(idx + 1) % crafted.length];
+    handleEquipWeapon(nextWeapon);
+  }, [handleEquipWeapon]);
+
+  const equippedWeaponDef = getWeaponDef(hudColonyState.equippedWeapon);
+
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-slate-950 select-none">
+    <div className="relative w-screen h-[100dvh] overflow-hidden bg-slate-950 select-none touch-none">
       {/* 1. Three.js Canvas Mount */}
-      <div ref={mountRef} className="absolute inset-0 z-0 cursor-crosshair active:cursor-grabbing" />
+      <div ref={mountRef} className="absolute inset-0 z-0 cursor-crosshair active:cursor-grabbing touch-none" />
 
       {/* 2. Title & 3-Player Co-op Lobby */}
       {gameState === 'title' && (
@@ -1182,6 +1670,7 @@ export default function App() {
           isMuted={isMuted}
           threatsEnabled={threatsEnabledPref}
           selectedRole={selectedRole}
+          isMobileDetected={deviceProfile.isMobile || deviceProfile.isTouchPrimary}
           onSelectRole={(roleId) => {
             selectedRoleRef.current = roleId;
             setSelectedRole(roleId);
@@ -1210,14 +1699,16 @@ export default function App() {
       )}
 
       {/* 5. Main HUD */}
-      {gameState === 'playing' && (
+      {gameState === 'playing' && !isOrbitalOpen && (
         <MarsColonyHUD
           colonyState={hudColonyState}
           currentObjective={currentObjective}
           playerRoleId={selectedRole}
+          playerPos={hudPlayerPos}
           jetpackFuel={jetpackFuel}
           activeEnemiesCount={activeEnemiesCount}
           isMuted={isMuted}
+          isMobileLayout={isMobileLayout}
           activeInputDevice={activeInputDevice}
           coopRoomCode={coopRoomCode}
           coopPlayers={coopPlayers}
@@ -1226,11 +1717,16 @@ export default function App() {
           onToggleThreats={handleToggleThreats}
           onPause={() => setSyncedGameState('paused')}
           onOpenTechTree={() => setSyncedTechModal(true)}
+          onOpenMissionControl={() => setSyncedMissionControlModal(true)}
+          onExcavateCrater={handleExcavateCrater}
+          onOpenWorkshop={() => setSyncedWorkshopModal(true)}
+          onOpenOrbital={() => setSyncedOrbitalModal(true)}
+          onConsumeFood={handleConsumeFood}
         />
       )}
 
       {/* 6. Mobile & Tablet Touch Controls */}
-      {gameState === 'playing' && isTouchSupported && (
+      {gameState === 'playing' && isTouchControlsVisible && !isOrbitalOpen && (
         <TouchControls
           onMoveChange={(vec) => {
             touchMovement.current = vec;
@@ -1251,7 +1747,15 @@ export default function App() {
             setActiveInputDevice('touch');
             firePlasmaPulse();
           }}
+          onExcavatePress={() => {
+            setActiveInputDevice('touch');
+            handleExcavateCrater();
+          }}
+          onCycleWeapon={handleCycleWeapon}
           hasActiveTrigger={Boolean(activeTrigger?.hasRequirements)}
+          equippedWeaponName={equippedWeaponDef.name}
+          craftedWeaponCount={hudColonyState.craftedWeapons.length}
+          isPortrait={deviceProfile.isPortrait}
         />
       )}
 
@@ -1271,10 +1775,51 @@ export default function App() {
         />
       )}
 
+      {/* 7b. Habitat Mission Control Terminal Modal [C] */}
+      {gameState === 'playing' && isMissionControlOpen && (
+        <MissionControlModal
+          colonyState={hudColonyState}
+          onRerollObjectives={handleRerollMissionControl}
+          onClose={() => setSyncedMissionControlModal(false)}
+        />
+      )}
+
+      {/* 7c. Colony Workshop Modal [B]: Chemical Refinery, Craftable Weapons & Glass-Dome Farming */}
+      {gameState === 'playing' && isWorkshopOpen && (
+        <ColonyWorkshopModal
+          colonyState={hudColonyState}
+          activeTab={workshopTab}
+          onChangeTab={setWorkshopTab}
+          onRunRecipe={handleRunRefineryRecipe}
+          onCraftWeapon={handleCraftWeapon}
+          onEquipWeapon={handleEquipWeapon}
+          onPlantCrop={handlePlantDomeCrop}
+          onHarvestCrop={handleHarvestDomeCrop}
+          onConsumeFood={handleConsumeFood}
+          onClose={() => setSyncedWorkshopModal(false)}
+        />
+      )}
+
+      {/* 7d. Interactive 3D Mars Orbital Planetary Explorer [V] */}
+      {gameState === 'playing' && isOrbitalOpen && (
+        <OrbitalExplorerModal
+          colonyState={hudColonyState}
+          qualityConfig={resolvedQualityConfig}
+          isMobileLayout={isMobileLayout}
+          onScanSite={handleScanOrbitalSite}
+          onLandAtBase={() => setSyncedOrbitalModal(false)}
+        />
+      )}
+
       {/* 8. Pause Modal */}
       {gameState === 'paused' && (
         <PauseModal
           isCoop={Boolean(coopRoomCode)}
+          qualityPreset={qualityPreset}
+          resolvedQualityTier={resolvedQualityConfig.tier}
+          touchControlsMode={touchControlsMode}
+          onChangeQualityPreset={handleChangeQualityPreset}
+          onChangeTouchControlsMode={handleChangeTouchControlsMode}
           onResume={() => setSyncedGameState('playing')}
           onRestart={() => startSoloMission(true)}
           onExitToLobby={handleExitToLobby}

@@ -20,9 +20,17 @@ import type { BuildingKey } from '../sim/marsColonyLogic';
 import { BUILDING_COORDS } from '../sim/marsEnemies';
 import { groundHeightAt, ObstacleCircle } from '../sim/marsPhysics';
 
+export type ResourceNodeKind =
+  | 'regolith'
+  | 'ice'
+  | 'iron'
+  | 'titanium'
+  | 'silicon'
+  | 'sulfur';
+
 export interface CollectableResource {
   id: string;
-  type: 'regolith' | 'ice';
+  type: ResourceNodeKind;
   mesh: THREE.Group;
   collected: boolean;
   isMagnetized: boolean;
@@ -48,6 +56,8 @@ export interface ColonyStructures {
   landerGroup: THREE.Group;
   landerPlume: THREE.Mesh;
   landerMaterials: THREE.Material[];
+  miniGreenhouseGroup: THREE.Group;
+  domeCropBedGroups: THREE.Group[];
 
   // MOXIE
   moxieGroup: THREE.Group;
@@ -160,12 +170,14 @@ export function createColonyStructures(): ColonyStructures {
     roughness: 0.15,
   });
 
-  const domeGlassMat = new THREE.MeshStandardMaterial({
-    color: 0x67e8f9,
+  const domeGlassMat = new THREE.MeshPhysicalMaterial({
+    color: 0xa5f3fc,
     transparent: true,
-    opacity: 0.44,
-    roughness: 0.14,
-    metalness: 0.15,
+    opacity: 0.34,
+    roughness: 0.08,
+    metalness: 0.12,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.08,
     depthWrite: false,
   });
 
@@ -431,27 +443,44 @@ export function createColonyStructures(): ColonyStructures {
   defenseTurretGroup.add(turretPedestal, turretRing, turretHead);
   defenseTurretGroup.visible = false;
 
-  // 8. HYDROPONIC BIODOME at (0, -19)
+  // 8. HYDROPONIC BIODOME (REDOMA DE VIDRO PRINCIPAL) at (0, -19)
   const domeY = groundHeightAt(0, -19);
   const bioDomeSlotRing = createBuildSlotRing(0, domeY, -19, 0x10b981, 4.4);
   const bioDome = new THREE.Group();
   bioDome.name = 'Structure_BioDome';
   bioDome.position.set(0, domeY, -19);
 
-  const domeGeo = new THREE.SphereGeometry(6.0, 22, 14, 0, Math.PI * 2, 0, Math.PI / 2);
+  const domeGeo = new THREE.SphereGeometry(6.0, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2);
   const domeGlass = new THREE.Mesh(domeGeo, domeGlassMat);
+  domeGlass.renderOrder = 2;
   const domeStruts = new THREE.Mesh(
     domeGeo,
-    new THREE.MeshBasicMaterial({
-      color: 0x475569,
+    new THREE.MeshStandardMaterial({
+      color: 0x64748b,
       wireframe: true,
       transparent: true,
-      opacity: 0.38,
+      opacity: 0.48,
+      metalness: 0.7,
+      roughness: 0.3,
     })
   );
+  const domeBaseRing = new THREE.Mesh(
+    new THREE.TorusGeometry(6.0, 0.28, 10, 32),
+    heatShieldMat
+  );
+  domeBaseRing.rotation.x = Math.PI / 2;
+  domeBaseRing.position.y = 0.22;
+
+  const growLampRing = new THREE.Mesh(
+    new THREE.TorusGeometry(3.2, 0.08, 8, 24),
+    new THREE.MeshBasicMaterial({ color: 0xfef08a })
+  );
+  growLampRing.rotation.x = Math.PI / 2;
+  growLampRing.position.y = 4.2;
+
   const planter = new THREE.Mesh(
-    new THREE.CylinderGeometry(5.0, 5.0, 0.45, 20),
-    new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.9 })
+    new THREE.CylinderGeometry(5.2, 5.2, 0.45, 20),
+    new THREE.MeshStandardMaterial({ color: 0x3f2e21, roughness: 0.94 })
   );
   planter.position.y = 0.22;
   const interiorPlants = new THREE.Group();
@@ -460,7 +489,7 @@ export function createColonyStructures(): ColonyStructures {
     const r = 1.6 + (i % 3) * 0.9;
     const plant = new THREE.Mesh(
       new THREE.ConeGeometry(0.45, 1.35, 7),
-      new THREE.MeshStandardMaterial({ color: 0x22c55e, roughness: 0.65 })
+      new THREE.MeshStandardMaterial({ color: i % 3 === 0 ? 0x84cc16 : 0x22c55e, roughness: 0.65 })
     );
     plant.position.set(Math.cos(angle) * r, 1.0, Math.sin(angle) * r);
     interiorPlants.add(plant);
@@ -469,8 +498,88 @@ export function createColonyStructures(): ColonyStructures {
   condenser.position.y = 1.8;
   const airlock = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.8, 2.2), heatShieldMat);
   airlock.position.set(0, 0.9, 6.0);
-  bioDome.add(domeGlass, domeStruts, planter, interiorPlants, condenser, airlock);
+  bioDome.add(domeGlass, domeStruts, domeBaseRing, growLampRing, planter, interiorPlants, condenser, airlock);
   bioDome.visible = false;
+
+  // 8B. STARTER GLASS FOOD GREENHOUSE DOME (REDOMA AGRÍCOLA INICIAL) at (-6.5, -5.5)
+  // Always deployed with the Starship survival kit so astronauts can immediately cultivate food inside glass!
+  const miniDomeY = groundHeightAt(-6.5, -5.5);
+  const miniGreenhouseGroup = new THREE.Group();
+  miniGreenhouseGroup.name = 'Structure_MiniGreenhouseDome';
+  miniGreenhouseGroup.position.set(-6.5, miniDomeY, -5.5);
+
+  const miniBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.45, 3.7, 0.45, 24),
+    heatShieldMat
+  );
+  miniBase.position.y = 0.22;
+  const miniSoil = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.15, 3.15, 0.14, 20),
+    new THREE.MeshStandardMaterial({ color: 0x3b281c, roughness: 0.96 })
+  );
+  miniSoil.position.y = 0.48;
+
+  const miniDomeGeo = new THREE.SphereGeometry(3.35, 22, 14, 0, Math.PI * 2, 0, Math.PI / 2);
+  const miniGlass = new THREE.Mesh(miniDomeGeo, domeGlassMat);
+  miniGlass.position.y = 0.42;
+  miniGlass.renderOrder = 2;
+  const miniStruts = new THREE.Mesh(
+    miniDomeGeo,
+    new THREE.MeshStandardMaterial({
+      color: 0x94a3b8,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.52,
+      metalness: 0.72,
+      roughness: 0.3,
+    })
+  );
+  miniStruts.position.y = 0.42;
+  const miniLamp = new THREE.Mesh(
+    new THREE.TorusGeometry(1.75, 0.06, 8, 20),
+    new THREE.MeshBasicMaterial({ color: 0xfde047 })
+  );
+  miniLamp.rotation.x = Math.PI / 2;
+  miniLamp.position.y = 2.65;
+  const miniAirlock = new THREE.Mesh(new THREE.BoxGeometry(1.25, 1.4, 1.25), landerMat);
+  miniAirlock.position.set(0, 0.7, 3.45);
+  miniGreenhouseGroup.add(miniBase, miniSoil, miniGlass, miniStruts, miniLamp, miniAirlock);
+
+  // 4 Visible Dynamic 3D Crop Beds inside the Glass Food Dome!
+  const domeCropBedOffsets = [
+    { x: -1.15, z: -1.05 },
+    { x: 1.15, z: -1.05 },
+    { x: -1.15, z: 1.05 },
+    { x: 1.15, z: 1.05 },
+  ];
+  const domeCropBedGroups: THREE.Group[] = domeCropBedOffsets.map((off) => {
+    const bedGroup = new THREE.Group();
+    bedGroup.position.set(off.x, 0.55, off.z);
+
+    const planterTray = new THREE.Mesh(
+      new THREE.BoxGeometry(1.65, 0.22, 1.35),
+      new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.45, roughness: 0.6 })
+    );
+    planterTray.position.y = 0.11;
+    bedGroup.add(planterTray);
+
+    const plantsHolder = new THREE.Group();
+    plantsHolder.name = 'cropPlants';
+    for (let k = 0; k < 6; k++) {
+      const col = k % 3;
+      const row = Math.floor(k / 3);
+      const stalk = new THREE.Mesh(
+        new THREE.ConeGeometry(0.19, 0.85, 6),
+        new THREE.MeshStandardMaterial({ color: 0x22c55e, roughness: 0.62 })
+      );
+      stalk.position.set(-0.46 + col * 0.46, 0.55, -0.26 + row * 0.52);
+      plantsHolder.add(stalk);
+    }
+    plantsHolder.visible = false;
+    bedGroup.add(plantsHolder);
+    miniGreenhouseGroup.add(bedGroup);
+    return plantsHolder;
+  });
 
   // 9. 3 EXTERIOR PLANTING PLOTS around BioDome
   const plantingPlots: PlantingPlot[] = PLANTING_PLOT_COORDS.map((coord, idx) => {
@@ -532,7 +641,38 @@ export function createColonyStructures(): ColonyStructures {
   habVisor.position.y = 1.75;
   const habAirlock = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.8, 1.5), heatShieldMat);
   habAirlock.position.set(2.5, 0.9, 0);
-  habitatGroup.add(habCore, habRoof, habVisor, habAirlock);
+
+  // Mission Control Terminal kiosk at Habitat entrance
+  const terminalBase = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.05, 0.7), heatShieldMat);
+  terminalBase.position.set(2.85, 0.52, 1.35);
+  const terminalScreenMat = new THREE.MeshStandardMaterial({
+    color: 0x06b6d4,
+    emissive: 0x0891b2,
+    emissiveIntensity: 0.9,
+    metalness: 0.4,
+    roughness: 0.2,
+  });
+  const terminalScreen = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.62, 0.12), terminalScreenMat);
+  terminalScreen.position.set(2.85, 1.32, 1.35);
+  terminalScreen.rotation.x = -0.35;
+  const terminalMast = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.85, 8), landerMat);
+  terminalMast.position.set(3.2, 1.45, 1.15);
+  const terminalBeacon = new THREE.Mesh(
+    new THREE.SphereGeometry(0.11, 10, 10),
+    new THREE.MeshBasicMaterial({ color: 0x22d3ee })
+  );
+  terminalBeacon.position.set(3.2, 1.9, 1.15);
+
+  habitatGroup.add(
+    habCore,
+    habRoof,
+    habVisor,
+    habAirlock,
+    terminalBase,
+    terminalScreen,
+    terminalMast,
+    terminalBeacon
+  );
   habitatGroup.visible = false;
 
   // 11. ORBITAL COMMS ARRAY at (12, 14)
@@ -814,10 +954,112 @@ export function createColonyStructures(): ColonyStructures {
     });
   });
 
+  // 17. EXPLORABLE BIOME MINERAL ORE VEINS (Iron, Titanium, Silicon, Sulfur)
+  const mineralMaterials: Record<'iron' | 'titanium' | 'silicon' | 'sulfur', THREE.MeshStandardMaterial> = {
+    iron: new THREE.MeshStandardMaterial({
+      color: 0xd97706,
+      emissive: 0x7c2d12,
+      emissiveIntensity: 0.35,
+      metalness: 0.78,
+      roughness: 0.32,
+    }),
+    titanium: new THREE.MeshStandardMaterial({
+      color: 0x94a3b8,
+      emissive: 0x3b82f6,
+      emissiveIntensity: 0.45,
+      metalness: 0.92,
+      roughness: 0.16,
+    }),
+    silicon: new THREE.MeshStandardMaterial({
+      color: 0xa855f7,
+      emissive: 0x7e22ce,
+      emissiveIntensity: 0.52,
+      metalness: 0.42,
+      roughness: 0.18,
+    }),
+    sulfur: new THREE.MeshStandardMaterial({
+      color: 0xfacc15,
+      emissive: 0xca8a04,
+      emissiveIntensity: 0.52,
+      metalness: 0.25,
+      roughness: 0.38,
+    }),
+  };
+
+  const mineralVeins: Array<{ type: 'iron' | 'titanium' | 'silicon' | 'sulfur'; x: number; z: number }> = [
+    // Basalt Canyon (East) — Iron & Titanium
+    { type: 'iron', x: 34, z: 4 },
+    { type: 'iron', x: 42, z: -8 },
+    { type: 'iron', x: 48, z: 14 },
+    { type: 'iron', x: 38, z: 22 },
+    { type: 'iron', x: 56, z: -2 },
+    { type: 'iron', x: 26, z: -4 },
+    { type: 'titanium', x: 46, z: 4 },
+    { type: 'titanium', x: 58, z: 16 },
+    { type: 'titanium', x: 64, z: -14 },
+    { type: 'titanium', x: 52, z: -20 },
+    // Polar Frost (North) — Silicon & Ice-border deposits
+    { type: 'silicon', x: 8, z: -42 },
+    { type: 'silicon', x: -12, z: -46 },
+    { type: 'silicon', x: 22, z: -50 },
+    { type: 'silicon', x: -24, z: -54 },
+    { type: 'silicon', x: 0, z: -60 },
+    { type: 'silicon', x: -6, z: -38 },
+    // Tharsis Volcanic Fissure (West & South) — Sulfur & Titanium
+    { type: 'sulfur', x: -34, z: 10 },
+    { type: 'sulfur', x: -44, z: 24 },
+    { type: 'sulfur', x: -50, z: -6 },
+    { type: 'sulfur', x: -36, z: 38 },
+    { type: 'sulfur', x: -22, z: 44 },
+    { type: 'sulfur', x: -56, z: 18 },
+    { type: 'titanium', x: -48, z: 30 },
+    { type: 'titanium', x: -60, z: -18 },
+    // Gale Perimeter (accessible early)
+    { type: 'iron', x: 16, z: 18 },
+    { type: 'silicon', x: -18, z: -18 },
+    { type: 'sulfur', x: -18, z: 20 },
+  ];
+
+  mineralVeins.forEach((vein, i) => {
+    const gy = groundHeightAt(vein.x, vein.z);
+    const group = new THREE.Group();
+    group.position.set(vein.x, gy + 0.5, vein.z);
+
+    const mat = mineralMaterials[vein.type];
+    const mainShard = new THREE.Mesh(
+      vein.type === 'iron'
+        ? new THREE.DodecahedronGeometry(0.46, 0)
+        : vein.type === 'titanium'
+        ? new THREE.OctahedronGeometry(0.5, 0)
+        : new THREE.ConeGeometry(0.32, 0.95, 6),
+      mat
+    );
+    mainShard.rotation.set(0.25, i * 0.7, 0.15);
+    const sideShard = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.62, 5), mat);
+    sideShard.position.set(0.28, -0.1, 0.18);
+    sideShard.rotation.set(0.4, 0.6, -0.45);
+    const shadow = new THREE.Mesh(shadowDiscGeo, shadowMat);
+    shadow.position.y = -0.46;
+
+    group.add(mainShard, sideShard, shadow);
+    group.userData = { baseY: gy + 0.5, seed: i * 2.1, type: vein.type };
+
+    resources.push({
+      id: `${vein.type}-${i}`,
+      type: vein.type,
+      mesh: group,
+      collected: false,
+      isMagnetized: false,
+      spawnPos: new THREE.Vector3(vein.x, gy + 0.5, vein.z),
+      respawnTimer: 0,
+    });
+  });
+
   const getObstacles: ColonyStructures['getObstacles'] = (buildings) => {
     const list: ObstacleCircle[] = [
       { id: 'obs-lander', x: 0, z: 0, radius: 2.65 },
       { id: 'obs-moxie', x: -7, z: 4, radius: 1.15 },
+      { id: 'obs-minidome', x: -6.5, z: -5.5, radius: 3.35 },
     ];
     if (buildings.waterExtractor) list.push({ id: 'obs-water', x: 14, z: -10, radius: 1.9 });
     if (buildings.autoMiner) list.push({ id: 'obs-miner', x: 18, z: 7, radius: 1.7 });
@@ -835,6 +1077,8 @@ export function createColonyStructures(): ColonyStructures {
     landerGroup: lander,
     landerPlume,
     landerMaterials,
+    miniGreenhouseGroup,
+    domeCropBedGroups,
     moxieGroup: moxie,
     moxieSlotRing,
     moxieLightBeam,

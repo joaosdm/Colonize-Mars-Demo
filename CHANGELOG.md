@@ -4,6 +4,41 @@ Todas as atualizações estruturais, melhorias de física, progressão evolutiva
 
 ---
 
+## [v3.1.0] - 2026-11-19
+
+### `feat(mobile): adaptação completa para celulares, tablets e controles multi-toque`
+- Criado módulo `src/sim/devicePerformance.ts` com detecção automática de smartphones/tablets (user-agent, `pointer: coarse`, `maxTouchPoints`, dimensões de tela e suporte a `?mobile=1`) e adaptação responsiva a retrato e paisagem (`100dvh`, `viewport-fit=cover`, safe-areas e bloqueio de zoom/overscroll acidental).
+- Atualizado `TouchControls.tsx` com Pointer Events multi-toque (`setPointerCapture`), joystick analógico esquerdo, rotação de câmera por arraste na tela 3D + pinça de zoom com 2 dedos, além de botões ergonômicos para **Ação**, **Jetpack/Pular**, **Disparar**, **Escavar Cratera** e troca rápida de arma.
+- Adaptado `MarsColonyHUD.tsx` com layout mobile compacto (barra superior de toque rápido + barra de minérios rolável no topo) mantendo o centro e a base livres para os controles virtuais, e adaptado `OrbitalExplorerModal.tsx` com arraste de toque no globo 3D de Marte e seletor horizontal mobile das 6 anomalias planetárias.
+
+### `perf(portal): otimizações WebGL/GC e escalonamento dinâmico de FPS para plataformas online`
+- Adicionado sistema de perfis gráficos (**Auto / Desempenho / Equilibrado / Alto**) e seletor de controles de toque no `PauseModal`, além do `AdaptivePerformanceMonitor` que ajusta dinamicamente o `pixelRatio` caso o FPS caia abaixo de 40fps e recupera quando estabiliza em 60fps.
+- Eliminadas alocações por frame no loop 3D (`Set`, `Map`, `THREE.Color`, `Vector2/3`, `.slice()`), adicionada verificação de mudança (*dirty check*) no upload GPU de `floraInstanced`, material leve nos lagos, descarte correto de materiais de inimigos eliminados, pausa automática com `document.hidden` e *code splitting* (`three`, `react`, `icons`) no build do Vite.
+
+---
+
+## [v3.0.0] - 2026-11-18
+
+### `feat(world): biomas exploráveis de Marte, céu realista e escavação 3D de crateras [G]`
+- Expandido o terreno de Marte para `300×300m` (`PLAYABLE_RADIUS = 112m`) com **4 biomas exploráveis** distintos (`Planície de Gale`, `Cânion de Basalto`, `Calota Polar Norte` e `Fissura Vulcânica Tharsis`), estratos geológicos, fumarolas vulcânicas, estalagmites de gelo polar e céu marciano com o Sol, **Fobos** e **Deimos**.
+- Implementada escavação física de **crateras 3D em tempo real** (`[G]` ou botão `Escavar [G]`): deforma a malha do terreno (`applyCraters`), atualiza a colisão de solo (`groundHeightAt`) e extrai minérios específicos de cada bioma (`Ferro`, `Titânio`, `Silício`, `Enxofre`, `Gelo`, `Regolito`), além de 27 veios minerais 3D visíveis pelo mapa.
+
+### `feat(agriculture): redomas de vidro para cultivo de alimentos e nutrição [B]/[H]`
+- Adicionada a **Redoma Agrícola de Vidro Inicial** ao lado da base e aprimorado o **Biodomo Principal** com material físico de vidro transparente e 4 canteiros 3D dinâmicos que crescem visualmente em tempo real (**Batata Marciana**, **Alface & Espirulina** e **Trigo Bioengenheirado**).
+- Adicionado sistema de **Nutrição** e **Rações Alimentares** (`[H]` para consumir ração e restaurar nutrição e O₂ do traje).
+
+### `feat(chemistry-arsenal): refinaria química ISRU e armamentos fabricáveis [B]/[1-4]`
+- Criado `src/sim/marsChemistry.ts` e `ColonyWorkshopModal.tsx` (`[B]`) com **6 processos químicos ISRU** (redução de regolito em Ferro+Silício, destilação de gelo, eletrólise de água em H₂+O₂, síntese Sabatier, refino de liga de Titânio e nutriente hidropônico NPK).
+- Adicionados **4 armamentos fabricáveis** com troca rápida `[1]–[4]`: *Pistola de Pulso EVA*, *Rifle de Assalto a Plasma* (rajada dupla), *Escopeta Iônica de Dispersão* (4 feixes em leque) e *Canhão Railgun de Titânio* (projétil perfurante).
+
+### `feat(combat): inimigos marcianos aperfeiçoados e saque mineral`
+- Adicionado 4º arquétipo (**Perseguidor Ácido** / `stalker`), manobras táticas de flanqueamento, projéteis ácidos/plasma disparados pelos inimigos, modelos 3D mais detalhados e saque de minérios (`Ferro`, `Titânio`, `Enxofre`) ao derrotar invasores.
+
+### `feat(orbit): modo de voo orbital 3D ao redor de Marte com a nave Starship [V]`
+- Criado `OrbitalExplorerModal.tsx` (`[V]` ou ao embarcar na Starship em `(0, 0)`): globo 3D procedural de Marte (Calotas Polares, Valles Marineris, Olympus Mons, atmosfera, Fobos e Deimos), pilotagem 3D da nave (`WASD`/Setas/Piloto Automático) e **6 anomalias planetárias** escaneáveis com combustível H₂ para recuperar recursos raros e descobertas científicas.
+
+---
+
 ## [v2.0.0] - 2026-11-16 15:25
 
 ### `perf(engine): elimina travamentos de 60Hz no loop principal`
@@ -118,6 +153,17 @@ Todas as atualizações estruturais, melhorias de física, progressão evolutiva
 - Integrado ao protocolo multiplayer (`src/net/coopProtocol.ts`), estado autoritativo das salas (`src/net/coopRoomState.ts`) e servidor WebSocket (`server.ts`), acumulando com os bônus de classe dos astronautas presentes (ex.: Engenheiro) e permitindo reparo contínuo cooperativo ao segurar `[E]`.
 - Atualizado `src/components/FloatingBillboards.tsx` e `src/App.tsx` para transmitir estado ativo de `[E]` e exibir o selo de multiplicador cooperativo (`Co-op 2 jogadores (1.8x)` / `Co-op 3 jogadores (2.5x)`) sobre a estrutura.
 - Adicionados testes unitários em `src/sim/coopActionBoost.test.ts` e integração em `src/net/coopRoomState.test.ts`.
+
+---
+
+## [v2.5.0] - 2026-11-16 09:05
+
+### `feat(habitat,missions): Terminal de Controle de Missões (Mission Control Terminal) com 3 objetivos diários`
+- Criado `src/sim/missionControl.ts` com geração aleatória de **3 objetivos diários distintos** por Sol (ex.: *Coletar 50 Regolito*, *Reparar 3 Módulos*, *Coletar 25 Cristais de Gelo*, *Neutralizar 4 Ameaças Marcianas*, *Purificar 15 Água*, *Cultivar 10 Biomassa*, *Concluir 1 Construção ou Plantio*), excluindo missões de combate no Modo Pacífico e concedendo recompensas bônus automáticas ao completar.
+- Integrado ao ciclo de vida da colônia (`src/sim/marsColonyLogic.ts`) e sincronização cooperativa autoritativa em tempo real (`src/net/coopProtocol.ts`, `src/net/coopClient.ts`, `src/net/coopRoomState.ts` e `server.ts`), com rotação automática a cada novo Sol e re-sorteio diário manual.
+- Adicionado terminal 3D físico dentro/junto ao Habitat Pressurizado (`src/graphics/colonyStructures.ts`) com interação automática por proximidade (`src/graphics/MarsSurfaceScene.ts`, `[E]` ou atalho `[C]`) e interface `src/components/MissionControlModal.tsx` acessível pelo botão `Missões [C]` no `MarsColonyHUD.tsx`.
+- Adicionada suíte unitária e de integração em `src/sim/missionControl.test.ts`.
+
 
 
 

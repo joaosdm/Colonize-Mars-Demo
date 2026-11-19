@@ -18,6 +18,7 @@ import {
   applyRoomRepairBuilding,
   applyRoomPlayerShoot,
   applyRoomTechResearch,
+  applyRoomMissionControlReroll,
   tickCoopRoomCombat,
   tickCoopRoom,
 } from './src/net/coopRoomState';
@@ -106,6 +107,7 @@ function leaveCurrentRoom(meta: ClientMeta) {
 async function startServer() {
   const app = express();
   app.use(express.json());
+  const server = http.createServer(app);
 
   app.get('/api/rooms', (_req, res) => {
     const list: RoomSummary[] = [];
@@ -127,10 +129,13 @@ async function startServer() {
 
   if (!IS_PROD) {
     const { createServer: createViteServer } = await import('vite');
+    const isHmrDisabled = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
+        allowedHosts: true,
+        hmr: !isHmrDisabled,
+        ws: { server, path: '/vite-hmr' },
       },
       appType: 'spa',
     });
@@ -143,8 +148,18 @@ async function startServer() {
     });
   }
 
-  const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (request, socket, head) => {
+    const pathname = new URL(
+      request.url || '/',
+      `http://${request.headers.host || 'localhost'}`
+    ).pathname;
+    if (pathname === '/ws') {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    }
+  });
 
   wss.on('connection', (ws) => {
     const playerId = 'p-' + Math.random().toString(36).slice(2, 10);
@@ -254,9 +269,17 @@ async function startServer() {
       if (msg.type === 'resource:collect') {
         const added = applyRoomResourceCollect(room, msg.resourceId, msg.resourceType);
         if (added) {
+          const labelMap: Record<string, string> = {
+            regolith: '+1 Regolito',
+            ice: '+1 Gelo',
+            iron: '+1 Ferro (Fe)',
+            titanium: '+1 Titânio (Ti)',
+            silicon: '+1 Silício (Si)',
+            sulfur: '+1 Enxofre (S)',
+          };
           broadcastColonySync(room, {
             kind: 'resource',
-            label: msg.resourceType === 'regolith' ? '+1 Regolito' : '+1 Gelo',
+            label: labelMap[msg.resourceType] || '+1 Recurso',
             byPlayer: player.name,
           });
         }
@@ -325,6 +348,18 @@ async function startServer() {
         if (res.changed) {
           broadcastColonySync(room, {
             kind: 'tech',
+            label: res.label,
+            byPlayer: player.name,
+          });
+        }
+        return;
+      }
+
+      if (msg.type === 'mission-control:reroll') {
+        const res = applyRoomMissionControlReroll(room);
+        if (res.changed) {
+          broadcastColonySync(room, {
+            kind: 'build',
             label: res.label,
             byPlayer: player.name,
           });

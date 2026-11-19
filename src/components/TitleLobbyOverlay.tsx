@@ -36,6 +36,7 @@ interface TitleLobbyOverlayProps {
   isMuted: boolean;
   threatsEnabled: boolean;
   selectedRole: AstronautRoleId;
+  isMobileDetected?: boolean;
   onSelectRole: (roleId: AstronautRoleId) => void;
   onToggleThreatsPref: () => void;
   onToggleMute: () => void;
@@ -56,6 +57,7 @@ export const TitleLobbyOverlay: React.FC<TitleLobbyOverlayProps> = ({
   isMuted,
   threatsEnabled,
   selectedRole,
+  isMobileDetected = false,
   onSelectRole,
   onToggleThreatsPref,
   onToggleMute,
@@ -86,27 +88,36 @@ export const TitleLobbyOverlay: React.FC<TitleLobbyOverlayProps> = ({
   const activeRoleDef = getAstronautRole(selectedRole);
 
   return (
-    <div className="fixed inset-0 z-30 flex flex-col justify-between p-4 sm:p-8 pointer-events-none select-none overflow-y-auto">
+    <div
+      className="fixed inset-0 z-30 flex flex-col justify-between p-3 sm:p-8 pointer-events-none select-none overflow-y-auto"
+      style={{
+        paddingTop: 'max(env(safe-area-inset-top), 12px)',
+        paddingBottom: 'max(env(safe-area-inset-bottom), 16px)',
+      }}
+    >
       {/* Top Bar */}
-      <div className="flex items-center justify-between w-full pointer-events-auto">
-        <div className="flex items-center gap-3 bg-slate-950/90 border border-slate-800 rounded-xl px-4 py-2 shadow-lg">
-          <div className="w-8 h-8 rounded-lg bg-orange-600 flex items-center justify-center text-white">
+      <div className="flex items-center justify-between gap-2 w-full pointer-events-auto">
+        <div className="flex items-center gap-2.5 sm:gap-3 bg-slate-950/90 border border-slate-800 rounded-xl px-3 sm:px-4 py-2 shadow-lg min-w-0">
+          <div className="w-8 h-8 rounded-lg bg-orange-600 flex items-center justify-center text-white shrink-0">
             <Rocket className="w-4 h-4" />
           </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-widest text-orange-400 font-bold">
-              PROJETO GALE · 0.38G · 12 MISSÕES
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-widest text-orange-400 font-bold truncate">
+              PROJETO GALE · 0.38G {isMobileDetected ? '· MODO MOBILE' : '· 12 MISSÕES'}
             </div>
-            <div className="text-xs text-slate-300 font-semibold">
-              Simulador Evolutivo de Colonização &amp; Defesa
+            <div className="text-xs text-slate-300 font-semibold truncate">
+              {isMobileDetected
+                ? 'Controles de Toque & Desempenho Otimizado'
+                : 'Simulador Evolutivo de Colonização & Defesa'}
             </div>
           </div>
         </div>
 
         <button
+          type="button"
           onClick={onToggleMute}
           aria-label={isMuted ? 'Ativar Áudio' : 'Mutar Áudio'}
-          className="p-2.5 rounded-xl bg-slate-950/90 border border-slate-700 text-slate-300 hover:text-white hover:border-slate-500 transition-colors cursor-pointer"
+          className="p-2.5 rounded-xl bg-slate-950/90 border border-slate-700 text-slate-300 hover:text-white hover:border-slate-500 transition-colors cursor-pointer shrink-0"
         >
           {isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5 text-emerald-400" />}
         </button>
@@ -126,6 +137,22 @@ export const TitleLobbyOverlay: React.FC<TitleLobbyOverlayProps> = ({
               Escolha sua classe de astronauta e jogue solo ou cooperativo de até{' '}
               <strong className="text-cyan-300">3 jogadores</strong>.
             </p>
+
+            {/* Mobile Above-the-Fold Quick-Start CTA */}
+            <div className="lg:hidden pt-1">
+              <button
+                type="button"
+                data-testid="mobile-quick-start-btn"
+                onClick={() => {
+                  soundManager.playClick();
+                  onStartSolo();
+                }}
+                className="w-full py-3 px-4 bg-orange-600 active:bg-orange-500 text-white font-black tracking-wide rounded-xl shadow-lg cursor-pointer transition-colors flex items-center justify-center gap-2 text-sm"
+              >
+                <Rocket className="w-4 h-4 shrink-0" />
+                <span>JOGAR SOLO ({activeRoleDef.shortLabel})</span>
+              </button>
+            </div>
           </div>
 
           {/* 3-Class Cooperative Selector */}
@@ -425,7 +452,9 @@ export const TitleLobbyOverlay: React.FC<TitleLobbyOverlayProps> = ({
 
       {/* Bottom Controls Legend */}
       <div className="w-full text-center text-xs text-slate-300 bg-slate-950/85 border border-slate-800/80 rounded-xl px-4 py-2 max-w-5xl mx-auto pointer-events-none">
-        WASD Mover · Espaço Pular · Shift Correr / Jetpack · [F] ou Clique Pulso Plasma · [E] Construir/Acelerar/Reparar · [T] Tech · Q/R Câmera
+        {isMobileDetected
+          ? 'Joystick Mover · Arraste Tela Girar Câmera · Pinça Zoom · Botões Toque: Atirar, Escavar, Jetpack e Ação'
+          : 'WASD Mover · Espaço Pular · Shift Correr / Jetpack · [F] ou Clique Pulso Plasma · [E] Construir/Acelerar/Reparar · [T] Tech · Q/R Câmera'}
       </div>
     </div>
   );

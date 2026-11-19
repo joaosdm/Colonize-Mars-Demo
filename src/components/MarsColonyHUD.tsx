@@ -30,8 +30,15 @@ import {
   Radio,
   FlaskConical,
   Wind,
+  Terminal,
+  Pickaxe,
+  Rocket,
+  Utensils,
+  MapPin,
 } from 'lucide-react';
 import { BuildingKey, ColonyState, ColonyObjective } from '../sim/marsColonyLogic';
+import { getMarsBiomeAt } from '../sim/marsWorld';
+import { getWeaponDef } from '../sim/marsChemistry';
 import { getUrgentMaintenanceModules } from '../sim/marsWeather';
 import { RemotePlayerState } from '../net/coopProtocol';
 import {
@@ -44,9 +51,11 @@ interface MarsColonyHUDProps {
   colonyState: ColonyState;
   currentObjective: ColonyObjective | null;
   playerRoleId: AstronautRoleId;
+  playerPos: { x: number; z: number };
   jetpackFuel: number;
   activeEnemiesCount: number;
   isMuted: boolean;
+  isMobileLayout: boolean;
   activeInputDevice: 'keyboard' | 'touch' | 'gamepad';
   coopRoomCode: string | null;
   coopPlayers: RemotePlayerState[];
@@ -55,15 +64,22 @@ interface MarsColonyHUDProps {
   onToggleThreats: () => void;
   onPause: () => void;
   onOpenTechTree: () => void;
+  onOpenMissionControl: () => void;
+  onExcavateCrater: () => void;
+  onOpenWorkshop: () => void;
+  onOpenOrbital: () => void;
+  onConsumeFood: () => void;
 }
 
 export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
   colonyState,
   currentObjective,
   playerRoleId,
+  playerPos,
   jetpackFuel,
   activeEnemiesCount,
   isMuted,
+  isMobileLayout,
   activeInputDevice,
   coopRoomCode,
   coopPlayers,
@@ -72,9 +88,17 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
   onToggleThreats,
   onPause,
   onOpenTechTree,
+  onOpenMissionControl,
+  onExcavateCrater,
+  onOpenWorkshop,
+  onOpenOrbital,
+  onConsumeFood,
 }) => {
   const isLowO2 = colonyState.oxygen < 25;
   const isNearO2 = colonyState.isNearO2Source;
+  const currentBiome = getMarsBiomeAt(playerPos.x, playerPos.z);
+  const equippedWeapon = getWeaponDef(colonyState.equippedWeapon);
+  const readyCropsCount = colonyState.domeCrops.filter((b) => b.readyToHarvest).length;
 
   const squadRoles: AstronautRoleId[] =
     coopPlayers.length > 0 ? coopPlayers.map((p) => p.roleId) : [playerRoleId];
@@ -92,6 +116,8 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
     colonyState.buildingHealth
   );
   const isDustStorm = Boolean(colonyState.dustStorm?.isActive);
+  const dailyDoneCount = colonyState.missionControl.objectives.filter((o) => o.completed).length;
+  const dailyTotalCount = colonyState.missionControl.objectives.length;
 
   const getPlanetPhaseLabel = (hab: number) => {
     if (hab >= 100) return 'Mundo Habitável';
@@ -162,6 +188,197 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
   const activeResearchRem = activeResearch
     ? Math.max(0, (activeResearch.durationSec - activeResearch.elapsedSec) / (playerStats.researchSpeedPct / 100))
     : 0;
+
+  if (isMobileLayout) {
+    return (
+      <div
+        data-testid="mobile-colony-hud"
+        className="absolute inset-0 pointer-events-none select-none z-10 flex flex-col justify-start gap-1.5 overflow-hidden"
+        style={{
+          paddingTop: 'max(env(safe-area-inset-top), 8px)',
+          paddingBottom: 'max(env(safe-area-inset-bottom), 8px)',
+          paddingLeft: 'max(env(safe-area-inset-left), 10px)',
+          paddingRight: 'max(env(safe-area-inset-right), 10px)',
+        }}
+      >
+        {/* Mobile Row 1: O2, Nutrition & Quick Action Buttons */}
+        <div
+          data-testid="mobile-hud-top-row"
+          className="flex items-center justify-between gap-1 w-full pointer-events-auto"
+        >
+          <div className="flex items-center gap-1 shrink-0">
+            <div
+              className={`flex items-center gap-1 px-1.5 h-8 rounded-lg border text-[10px] font-black shadow-md tabular-nums shrink-0 ${
+                isLowO2
+                  ? 'bg-red-950/95 border-red-500 text-red-200'
+                  : isNearO2
+                  ? 'bg-emerald-950/92 border-emerald-500/70 text-emerald-200'
+                  : 'bg-slate-950/92 border-slate-700 text-slate-100'
+              }`}
+            >
+              <Zap className={`w-3 h-3 shrink-0 ${isLowO2 ? 'text-red-400' : isNearO2 ? 'text-emerald-400' : 'text-cyan-400'}`} />
+              <span>{Math.round(colonyState.oxygen)}%</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={onConsumeFood}
+              disabled={colonyState.food < 1}
+              aria-label={`Nutrição ${Math.round(colonyState.hunger)}% - Tocar para comer ração`}
+              className={`flex items-center gap-1 px-1.5 h-8 rounded-lg border text-[10px] font-bold shadow-md tabular-nums shrink-0 cursor-pointer ${
+                colonyState.hunger < 45
+                  ? 'bg-amber-950/95 border-amber-400 text-amber-200'
+                  : 'bg-slate-950/92 border-slate-700 text-emerald-300'
+              }`}
+            >
+              <Utensils className="w-3 h-3 shrink-0" />
+              <span>{Math.round(colonyState.hunger)}%</span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={onOpenWorkshop}
+              data-testid="hud-workshop-btn"
+              aria-label="Abrir Oficina: Refinaria, Arsenal e Redomas"
+              className={`h-8 px-2 rounded-lg border flex items-center gap-1 text-[10px] font-black cursor-pointer shadow-md whitespace-nowrap ${
+                readyCropsCount > 0
+                  ? 'bg-emerald-950/95 border-emerald-400 text-emerald-200'
+                  : 'bg-slate-950/92 border-teal-500/70 text-teal-200'
+              }`}
+            >
+              <FlaskConical className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden min-[375px]:inline">Oficina</span>
+              {readyCropsCount > 0 && <span className="text-[9px] text-emerald-300">+{readyCropsCount}</span>}
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenOrbital}
+              data-testid="hud-orbital-btn"
+              aria-label="Explorar Planeta com a Nave"
+              className="h-8 px-2 rounded-lg border bg-sky-950/92 border-sky-400/70 text-sky-200 flex items-center gap-1 text-[10px] font-black cursor-pointer shadow-md whitespace-nowrap"
+            >
+              <Rocket className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden min-[375px]:inline">Nave</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenMissionControl}
+              data-testid="hud-mission-control-btn"
+              aria-label="Abrir Mission Control Terminal"
+              className={`w-8 h-8 rounded-lg border flex items-center justify-center cursor-pointer shadow-md shrink-0 ${
+                colonyState.buildings.habitat
+                  ? 'bg-cyan-950/92 border-cyan-400/70 text-cyan-200'
+                  : 'bg-slate-950/92 border-slate-700 text-slate-300'
+              }`}
+            >
+              <Terminal className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenTechTree}
+              aria-label="Abrir Árvore Tecnológica"
+              className={`w-8 h-8 rounded-lg border flex items-center justify-center cursor-pointer shadow-md shrink-0 ${
+                colonyState.buildings.researchLab
+                  ? 'bg-purple-950/92 border-purple-400/70 text-purple-200'
+                  : 'bg-slate-950/92 border-slate-700 text-slate-300'
+              }`}
+            >
+              <Cpu className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={onPause}
+              data-testid="hud-pause-btn"
+              aria-label="Pausar Jogo e Qualidade"
+              className="w-8 h-8 rounded-lg bg-slate-950/92 border border-slate-700 flex items-center justify-center text-slate-200 cursor-pointer shadow-md shrink-0"
+            >
+              <Pause className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Mobile Row 2: Compact Horizontally Scrollable Mineral & Resource Strip */}
+        <div
+          data-testid="hud-resources-bar"
+          className="pointer-events-auto flex items-center gap-2.5 overflow-x-auto no-scrollbar bg-slate-950/88 border border-slate-700/70 rounded-xl px-3 py-1.5 text-[10px] font-bold shadow-md tabular-nums whitespace-nowrap"
+        >
+          <span className="text-amber-300">Reg <b>{colonyState.regolith}</b></span>
+          <span className="text-cyan-300">Gelo <b>{colonyState.waterIce}</b></span>
+          <span className="text-sky-300">Água <b>{colonyState.water}</b></span>
+          <span className="text-emerald-300">Alim <b>{colonyState.food}</b></span>
+          <span className="text-lime-300">Bio <b>{colonyState.biomass}</b></span>
+          <span className="text-slate-600">|</span>
+          <span className="text-orange-300">Fe <b>{colonyState.iron}</b></span>
+          <span className="text-violet-300">Ti <b>{colonyState.titanium}</b></span>
+          <span className="text-teal-300">Si <b>{colonyState.silicon}</b></span>
+          <span className="text-yellow-300">S <b>{colonyState.sulfur}</b></span>
+          <span className="text-pink-300">H₂ <b>{colonyState.fuel}</b></span>
+          <span className="text-slate-600">|</span>
+          <span className="text-yellow-200">⚡<b>{colonyState.energy}kW</b></span>
+        </div>
+
+        {/* Mobile Row 3: Compact Mission + Biome + Active Alerts (keeps center 3D view clear) */}
+        <div className="flex flex-col items-start gap-1.5 max-w-[270px] sm:max-w-[320px] pointer-events-auto">
+          <div className="w-full bg-slate-950/85 border border-cyan-500/40 rounded-xl px-3 py-1.5 shadow-lg">
+            <div className="flex items-center justify-between gap-2 text-[9px] font-black uppercase tracking-wider text-cyan-400 tabular-nums">
+              <span className="flex items-center gap-1 truncate">
+                <MapPin className="w-3 h-3 shrink-0" style={{ color: currentBiome.accentHex }} />
+                {currentBiome.name} · Crateras: {colonyState.craters.length}
+              </span>
+              <span className="text-slate-300 shrink-0">
+                SOL {colonyState.solDay} · {Math.round(colonyState.habitability)}%
+              </span>
+            </div>
+            <div className="text-[11px] font-bold text-white truncate mt-0.5">{displayTitle}</div>
+            <div className="text-[10px] text-slate-300 truncate">{getObjectiveProgressText()}</div>
+          </div>
+
+          {colonyState.activeConstructions.slice(0, 1).map((job) => {
+            const pct = Math.min(100, Math.round((job.elapsedSec / job.durationSec) * 100));
+            return (
+              <div
+                key={job.id}
+                className="w-full bg-slate-950/90 border border-amber-500/50 rounded-lg px-2.5 py-1.5 shadow-md space-y-1"
+              >
+                <div className="flex items-center justify-between gap-2 text-[10px] font-bold text-amber-300 tabular-nums">
+                  <span className="truncate">{job.name}</span>
+                  <span>{pct}%</span>
+                </div>
+                <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
+                  <div className="h-full bg-amber-400 rounded-full" style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+            );
+          })}
+
+          {isDustStorm && (
+            <div
+              data-testid="hud-dust-storm-alert"
+              className="w-full bg-amber-950/95 border border-amber-400/80 text-amber-100 rounded-lg px-2.5 py-1.5 text-[10px] font-bold flex items-center justify-between gap-2 shadow-lg"
+            >
+              <span className="flex items-center gap-1 text-amber-300">
+                <Wind className="w-3.5 h-3.5" />
+                Tempestade (-50% Solar)
+              </span>
+              <span className="tabular-nums">{Math.ceil(colonyState.dustStorm.remainingSec)}s</span>
+            </div>
+          )}
+
+          {coopEventBanner && (
+            <div className="bg-emerald-950/92 border border-emerald-500/50 text-emerald-200 text-[10px] font-bold px-2.5 py-1 rounded-lg shadow-lg">
+              {coopEventBanner}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -350,7 +567,7 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
           )}
         </div>
 
-        {/* Top-Center: Habitability + Threats Status + Co-op Room Strip */}
+        {/* Top-Center: Habitability + Current Mars Biome + Threats Status + Co-op Room Strip */}
         <div className="hidden sm:flex flex-col items-center gap-1.5 shrink-0 pointer-events-auto">
           <div className="bg-slate-950/90 border border-slate-700/70 rounded-xl px-3 lg:px-4 py-2 shadow-xl flex items-center gap-2.5 lg:gap-3">
             <div className="flex flex-col">
@@ -366,6 +583,23 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
             </div>
             <span className="text-sm font-black text-cyan-300 min-w-9 text-right tabular-nums">
               {Math.round(colonyState.habitability)}%
+            </span>
+          </div>
+
+          {/* Live Mars Biome & Coordinates Strip */}
+          <div
+            data-testid="hud-biome-indicator"
+            className="bg-slate-950/90 border border-slate-700/75 rounded-lg px-3 py-1 flex items-center gap-2 text-[11px] font-bold text-slate-200 shadow-md tabular-nums"
+          >
+            <MapPin className="w-3.5 h-3.5 shrink-0" style={{ color: currentBiome.accentHex }} />
+            <span className="text-white">{currentBiome.name}</span>
+            <span className="text-slate-500">·</span>
+            <span className="font-mono text-[10px] text-slate-400">
+              {Math.round(playerPos.x)}m, {Math.round(playerPos.z)}m
+            </span>
+            <span className="text-slate-500">·</span>
+            <span className="text-[10px] text-amber-300">
+              Crateras: {colonyState.craters.length}
             </span>
           </div>
 
@@ -423,11 +657,11 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
           </div>
         </div>
 
-        {/* Top-Right: O2, Jetpack, Tech Button, Mute, Pause + Active Role Stats Card */}
+        {/* Top-Right: O2, Jetpack, Action Bar ([G], [B], [V], [C], [T]), Mute, Pause + Role/Weapon/Nutrition Card */}
         <div className="flex flex-col items-end gap-2 shrink-0 pointer-events-auto">
-          <div className="flex items-center gap-1.5 lg:gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
             <div
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold shadow-lg tabular-nums ${
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-bold shadow-lg tabular-nums ${
                 isLowO2
                   ? 'bg-red-950/95 border-red-500 text-red-200'
                   : isNearO2
@@ -436,43 +670,104 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
               }`}
             >
               {isLowO2 ? (
-                <ShieldAlert className="w-4 h-4 text-red-400" />
+                <ShieldAlert className="w-3.5 h-3.5 text-red-400" />
               ) : (
-                <Zap className={`w-4 h-4 ${isNearO2 ? 'text-emerald-400' : 'text-cyan-400'}`} />
+                <Zap className={`w-3.5 h-3.5 ${isNearO2 ? 'text-emerald-400' : 'text-cyan-400'}`} />
               )}
-              <div className="flex flex-col text-left">
-                <span className="text-[9px] font-semibold uppercase opacity-80">
-                  {isNearO2 ? 'O2 Seguro' : 'O2 Traje'}
-                </span>
-                <span className="text-xs font-black">{Math.round(colonyState.oxygen)}%</span>
-              </div>
+              <span className="font-black">O₂ {Math.round(colonyState.oxygen)}%</span>
             </div>
 
-            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-950/90 border border-slate-700 text-slate-200 shadow-lg tabular-nums">
-              <Flame className="w-4 h-4 text-orange-400" />
-              <div className="flex flex-col text-left">
-                <span className="text-[9px] font-semibold uppercase opacity-80">Jetpack</span>
-                <div className="w-12 h-1.5 bg-slate-800 rounded-full overflow-hidden mt-0.5">
-                  <div
-                    className="h-full bg-orange-400 rounded-full"
-                    style={{ width: `${Math.round(jetpackFuel)}%` }}
-                  />
-                </div>
+            <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-950/90 border border-slate-700 text-slate-200 shadow-lg tabular-nums text-xs font-bold">
+              <Flame className="w-3.5 h-3.5 text-orange-400" />
+              <div className="w-10 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-orange-400 rounded-full"
+                  style={{ width: `${Math.round(jetpackFuel)}%` }}
+                />
               </div>
             </div>
 
             <button
               type="button"
+              onClick={onExcavateCrater}
+              data-testid="hud-excavate-btn"
+              className="h-9 px-2.5 rounded-xl border bg-amber-950/90 border-amber-500/65 text-amber-200 hover:bg-amber-900 flex items-center gap-1.5 text-xs font-bold cursor-pointer transition-colors shadow-md whitespace-nowrap"
+              title="Escavar Cratera e Minérios no Solo [G]"
+              aria-label="Escavar Cratera no Solo"
+            >
+              <Pickaxe className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Escavar</span>
+              <span className="text-[10px] font-mono opacity-80">[G]</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenWorkshop}
+              data-testid="hud-workshop-btn"
+              className={`h-9 px-2.5 rounded-xl border flex items-center gap-1.5 text-xs font-bold cursor-pointer transition-colors shadow-md whitespace-nowrap ${
+                readyCropsCount > 0
+                  ? 'bg-emerald-950/95 border-emerald-400 text-emerald-200 hover:bg-emerald-900'
+                  : 'bg-slate-950/90 border-teal-500/65 text-teal-200 hover:bg-slate-900'
+              }`}
+              title="Refinaria Química, Arsenal e Redomas de Vidro [B]"
+              aria-label="Abrir Oficina: Refinaria, Arsenal e Redomas"
+            >
+              <FlaskConical className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Oficina</span>
+              {readyCropsCount > 0 && (
+                <span className="text-[10px] font-mono text-emerald-300">+{readyCropsCount}</span>
+              )}
+              <span className="text-[10px] font-mono opacity-80">[B]</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenOrbital}
+              data-testid="hud-orbital-btn"
+              className="h-9 px-2.5 rounded-xl border bg-sky-950/90 border-sky-400/70 text-sky-200 hover:bg-sky-900 flex items-center gap-1.5 text-xs font-bold cursor-pointer transition-colors shadow-md whitespace-nowrap"
+              title="Explorar Marte em Órbita com a Nave Starship [V]"
+              aria-label="Explorar Planeta com a Nave"
+            >
+              <Rocket className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Nave</span>
+              <span className="text-[10px] font-mono opacity-80">[V]</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenMissionControl}
+              data-testid="hud-mission-control-btn"
+              className={`h-9 px-2.5 rounded-xl border flex items-center gap-1.5 text-xs font-bold cursor-pointer transition-colors shadow-md whitespace-nowrap tabular-nums ${
+                colonyState.buildings.habitat
+                  ? 'bg-cyan-950/90 border-cyan-400/70 text-cyan-200 hover:bg-cyan-900'
+                  : 'bg-slate-950/90 border-slate-700 text-slate-400 hover:text-white'
+              }`}
+              title="Mission Control Terminal (Habitat) [C]"
+              aria-label="Abrir Mission Control Terminal"
+            >
+              <Terminal className="w-3.5 h-3.5" />
+              <span className="hidden xl:inline">Missões</span>
+              {colonyState.buildings.habitat && (
+                <span className="text-[10px] font-mono text-cyan-300">
+                  {dailyDoneCount}/{dailyTotalCount}
+                </span>
+              )}
+              <span className="text-[10px] font-mono opacity-80">[C]</span>
+            </button>
+
+            <button
+              type="button"
               onClick={onOpenTechTree}
-              className={`h-9 px-3 rounded-xl border flex items-center gap-1.5 text-xs font-bold cursor-pointer transition-colors shadow-md whitespace-nowrap ${
+              className={`h-9 px-2.5 rounded-xl border flex items-center gap-1.5 text-xs font-bold cursor-pointer transition-colors shadow-md whitespace-nowrap ${
                 colonyState.buildings.researchLab
                   ? 'bg-purple-950/90 border-purple-400/70 text-purple-200 hover:bg-purple-900'
                   : 'bg-slate-950/90 border-slate-700 text-slate-400 hover:text-white'
               }`}
               title="Árvore Tecnológica [T]"
+              aria-label="Abrir Árvore Tecnológica"
             >
-              <Cpu className="w-4 h-4" />
-              <span className="hidden md:inline">Tech</span>
+              <Cpu className="w-3.5 h-3.5" />
+              <span className="hidden xl:inline">Tech</span>
               <span className="text-[10px] font-mono opacity-80">[T]</span>
             </button>
 
@@ -497,10 +792,10 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
             </button>
           </div>
 
-          {/* Active Player Role & Live Stats Strip */}
+          {/* Active Player Role, Nutrition, Equipped Weapon & Live Stats Strip */}
           <div
             data-testid="hud-player-stats"
-            className="bg-slate-950/90 border rounded-xl px-3 py-2 shadow-lg text-[11px] max-w-xs sm:max-w-sm"
+            className="bg-slate-950/90 border rounded-xl px-3 py-2 shadow-lg text-[11px] max-w-xs sm:max-w-sm space-y-1.5"
             style={{ borderColor: `${playerStats.accentHex}70` }}
           >
             <div className="flex items-center justify-between gap-3 pb-1 border-b border-slate-800">
@@ -511,12 +806,34 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
                 />
                 <span>{playerStats.roleName}</span>
               </span>
-              <span className="text-[10px] font-mono text-slate-400">
-                STAT ATIVAS · {playerStats.shortLabel}
+              <button
+                type="button"
+                onClick={onConsumeFood}
+                disabled={colonyState.food < 1}
+                title="Consumir Ração da Redoma [H]"
+                className={`text-[10px] font-bold flex items-center gap-1 px-1.5 py-0.5 rounded border cursor-pointer tabular-nums ${
+                  colonyState.hunger < 45
+                    ? 'bg-amber-950 border-amber-500 text-amber-200'
+                    : 'bg-slate-900 border-slate-700 text-emerald-300 hover:border-emerald-500'
+                }`}
+              >
+                <Utensils className="w-3 h-3" />
+                Nutrição {Math.round(colonyState.hunger)}% [H]
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 text-[10px] pb-1 border-b border-slate-800/80">
+              <span className="text-slate-400">Arma [{equippedWeapon.slotKey}]:</span>
+              <span className="font-black text-white flex items-center gap-1.5">
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: equippedWeapon.boltColorHex }}
+                />
+                {equippedWeapon.name}
               </span>
             </div>
 
-            <div className="grid grid-cols-3 gap-x-3 gap-y-1 pt-1.5 text-[10px] tabular-nums">
+            <div className="grid grid-cols-3 gap-x-3 gap-y-1 text-[10px] tabular-nums">
               <div className="flex items-center justify-between gap-1">
                 <span className="text-slate-400">Obra</span>
                 <span
@@ -568,13 +885,9 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
                 </span>
               </div>
               <div className="flex items-center justify-between gap-1">
-                <span className="text-slate-400">Plasma</span>
-                <span
-                  className={`font-bold ${
-                    playerStats.plasmaDamage > 26 ? 'text-red-300' : 'text-slate-200'
-                  }`}
-                >
-                  {playerStats.plasmaDamage} dmg
+                <span className="text-slate-400">Órbita</span>
+                <span className="font-bold text-sky-300">
+                  {colonyState.discoveredSites.length}/6
                 </span>
               </div>
             </div>
@@ -582,56 +895,51 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
         </div>
       </div>
 
-      {/* 2. BOTTOM BAR: Resources & Control Hints */}
-      <div className="flex flex-wrap items-end justify-between gap-3 w-full">
-        <div className="flex flex-wrap items-center gap-3 bg-slate-950/90 border border-slate-700/70 rounded-xl px-4 py-2 text-xs font-bold shadow-lg pointer-events-auto tabular-nums">
-          <div className="flex items-center gap-1.5 text-amber-300" title="Regolito Mineral">
-            <Mountain className="w-4 h-4 text-amber-400" />
-            <span>
-              Regolito: <b>{colonyState.regolith}</b>
-            </span>
+      {/* 2. BOTTOM BAR: Full Martian Minerals, Essentials & Control Hints */}
+      <div className="flex flex-wrap items-end justify-between gap-2 w-full">
+        <div
+          data-testid="hud-resources-bar"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-slate-950/92 border border-slate-700/75 rounded-xl px-3.5 py-2 text-[11px] font-bold shadow-lg pointer-events-auto tabular-nums"
+        >
+          <div className="flex items-center gap-1 text-amber-300" title="Regolito Mineral">
+            <Mountain className="w-3.5 h-3.5 text-amber-400" />
+            <span>Reg: <b>{colonyState.regolith}</b></span>
+          </div>
+          <div className="flex items-center gap-1 text-cyan-300" title="Cristais de Gelo (H₂O)">
+            <Droplet className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Gelo: <b>{colonyState.waterIce}</b></span>
+          </div>
+          <div className="flex items-center gap-1 text-sky-300" title="Água Purificada">
+            <Droplets className="w-3.5 h-3.5 text-sky-400" />
+            <span>Água: <b>{colonyState.water}</b></span>
+          </div>
+          <div className="flex items-center gap-1 text-emerald-300" title="Alimentos da Redoma de Vidro">
+            <Utensils className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Alim: <b>{colonyState.food}</b></span>
+          </div>
+          <div className="flex items-center gap-1 text-lime-300" title="Biomassa">
+            <Sprout className="w-3.5 h-3.5 text-lime-400" />
+            <span>Bio: <b>{colonyState.biomass}</b></span>
           </div>
           <span className="text-slate-700">|</span>
-          <div className="flex items-center gap-1.5 text-cyan-300" title="Cristais de Gelo">
-            <Droplet className="w-4 h-4 text-cyan-400" />
-            <span>
-              Gelo: <b>{colonyState.waterIce}</b>
-            </span>
-          </div>
+          <span className="text-orange-300" title="Minério de Ferro (Fe)">Fe: <b>{colonyState.iron}</b></span>
+          <span className="text-violet-300" title="Liga de Titânio (Ti)">Ti: <b>{colonyState.titanium}</b></span>
+          <span className="text-teal-300" title="Silício Cristalino (Si)">Si: <b>{colonyState.silicon}</b></span>
+          <span className="text-yellow-300" title="Enxofre Vulcânico (S)">S: <b>{colonyState.sulfur}</b></span>
+          <span className="text-pink-300" title="Combustível Espacial (H₂)">H₂: <b>{colonyState.fuel}</b></span>
           <span className="text-slate-700">|</span>
-          <div className="flex items-center gap-1.5 text-sky-300" title="Água Líquida Purificada">
-            <Droplets className="w-4 h-4 text-sky-400" />
+          <div className="flex items-center gap-1 text-yellow-200" title="Energia da Colônia">
+            <Zap className="w-3.5 h-3.5 text-yellow-400" />
             <span>
-              Água: <b>{colonyState.water}</b>
-            </span>
-          </div>
-          <span className="text-slate-700">|</span>
-          <div className="flex items-center gap-1.5 text-emerald-300" title="Biomassa Cultivada">
-            <Sprout className="w-4 h-4 text-emerald-400" />
-            <span>
-              Biomassa: <b>{colonyState.biomass}</b>
-            </span>
-          </div>
-          <span className="text-slate-700">|</span>
-          <div className="flex items-center gap-1.5 text-yellow-300" title="Energia da Colônia">
-            <Zap className="w-4 h-4 text-yellow-400" />
-            <span>
-              Energia: <b>{colonyState.energy} kW</b>
-              {playerStats.energyBonusPct > 0 && (
-                <span className="text-[10px] text-cyan-300 ml-1">
-                  (+{playerStats.energyBonusPct}%)
-                </span>
-              )}
+              <b>{colonyState.energy} kW</b>
               {isDustStorm && colonyState.buildings.solarPanels && (
-                <span className="text-[10px] text-amber-300 ml-1 font-black">
-                  (-50% Solar)
-                </span>
+                <span className="text-[10px] text-amber-300 ml-1 font-black">(-50% Solar)</span>
               )}
             </span>
           </div>
         </div>
 
-        <div className="hidden lg:flex items-center gap-2 bg-slate-950/85 border border-slate-800 rounded-lg px-3 py-1.5 text-[11px] font-medium text-slate-300 shadow-sm">
+        <div className="hidden xl:flex items-center gap-2 bg-slate-950/88 border border-slate-800 rounded-lg px-3 py-1.5 text-[11px] font-medium text-slate-300 shadow-sm">
           {activeInputDevice === 'touch' && (
             <span>Toque: Joystick (Esq) · Pular/Jetpack, Pulso e Ação (Dir)</span>
           )}
@@ -640,7 +948,7 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
           )}
           {activeInputDevice === 'keyboard' && (
             <span>
-              WASD Mover · Shift Correr/Jetpack · [F]/Clique Pulso Plasma · [E] Construir/Acelerar/Reparar · [T] Tech
+              WASD Mover · [G] Escavar · [B] Refinaria/Armas/Redoma · [V] Nave Orbital · [1-4] Armas · [F] Disparar · [E] Ação
             </span>
           )}
         </div>

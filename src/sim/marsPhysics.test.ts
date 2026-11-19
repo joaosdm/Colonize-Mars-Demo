@@ -13,7 +13,7 @@ test('groundHeightAt is flat inside central landing pad and depressed inside cra
   assert.equal(groundHeightAt(5, 5), 0);
   assert.ok(groundHeightAt(22, -16) < -1.5, 'East lake basin should dip below 0');
   assert.ok(groundHeightAt(-24, -18) < -1.5, 'West lake basin should dip below 0');
-  assert.ok(groundHeightAt(75, 0) > 2.0, 'Outer crater rim should rise');
+  assert.ok(groundHeightAt(126, 0) > 2.0, 'Outer crater rim should rise beyond expanded 112m playable basin');
 });
 
 test('groundNormalAt returns upward unit vector on flat terrain', () => {

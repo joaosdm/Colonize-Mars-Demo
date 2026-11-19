@@ -4,10 +4,12 @@
  * resource grounding, and unit tests.
  */
 
+import { ExcavatedCrater, craterOffsetAt } from './marsWorld';
+
 export const MARS_GRAVITY_ACCEL = 10.6; // Scaled 0.38g (Earth ~27.8 -> Mars 0.38g = 10.6 m/s^2)
 export const BASE_JUMP_IMPULSE = 8.4; // Floaty ~3.3m high Martian jump
 export const JETPACK_THRUST = 15.8; // Exceeds 0.38g to allow gentle hovering & crater leaps
-export const PLAYABLE_RADIUS = 68.0;
+export const PLAYABLE_RADIUS = 112.0;
 
 export interface ObstacleCircle {
   id: string;
@@ -46,8 +48,12 @@ export interface PhysicsUpgrades {
   jetpackCapacityMultiplier: number; // e.g., 1.0 base, 1.4 with tech
 }
 
-export function createPhysicsBody(x = 0, z = 6.5): PhysicsBody {
-  const y = groundHeightAt(x, z);
+export function createPhysicsBody(
+  x = 0,
+  z = 6.5,
+  craters?: ExcavatedCrater[]
+): PhysicsBody {
+  const y = groundHeightAt(x, z, craters);
   return {
     x,
     y,
@@ -67,28 +73,52 @@ export function createPhysicsBody(x = 0, z = 6.5): PhysicsBody {
 }
 
 /**
- * Deterministic Martian terrain heightmap at world (x, z).
- * - Central flat landing zone (radius <= 14m)
- * - Two crater lake basins around (22, -16) and (-24, -18) that fill with water during terraforming
- * - Rolling oxide dunes (14m .. 62m)
- * - Natural surrounding crater rim cliffs (> 62m)
+ * Deterministic Martian terrain heightmap at world (x, z) + live excavated craters.
+ * - Central flat landing zone (radius <= 13.5m)
+ * - Two crater lake basins around (22, -16) and (-24, -18)
+ * - 4 Explorable Biomes: Gale Plains, Basalt Canyon (East), Polar Frost (North), Tharsis Fissure (West/South)
+ * - Natural Gale Crater Rim cliffs (> 98m)
  */
-export function groundHeightAt(x: number, z: number): number {
+export function groundHeightAt(
+  x: number,
+  z: number,
+  craters?: ExcavatedCrater[]
+): number {
   const distCenter = Math.hypot(x, z);
 
-  // Flat landing zone & colony core
+  // Flat landing zone & colony core (still respects excavated craters!)
   if (distCenter <= 13.5) {
-    return 0;
+    return craterOffsetAt(x, z, craters);
   }
 
-  // Smooth transition factor out of the flat core
   const blend = Math.min(1, Math.max(0, (distCenter - 13.5) / 8.0));
 
-  // Rolling dunes
+  // Rolling Martian dunes & strata ridges
   let h =
     (Math.sin(x * 0.055) * Math.cos(z * 0.055) * 1.65 +
       Math.sin(x * 0.11 + z * 0.08) * 0.65) *
     blend;
+
+  // East Basalt Canyon mesas (x > 34)
+  if (x > 34) {
+    const canyonBlend = Math.min(1, (x - 34) / 24);
+    h += Math.sin(z * 0.085) * 2.1 * canyonBlend + Math.cos(x * 0.09) * 1.1 * canyonBlend;
+  }
+
+  // North Polar Frost terraced plateau (z < -34)
+  if (z < -34) {
+    const polarBlend = Math.min(1, (-z - 34) / 26);
+    h += (1.1 + Math.sin(x * 0.06) * 0.9) * polarBlend;
+  }
+
+  // West/South Tharsis Volcanic Fissure ridges (x < -32 or z > 38)
+  if (x < -32 || z > 38) {
+    const tharsisBlend = Math.min(
+      1,
+      Math.max(0, (-x - 32) / 24, (z - 38) / 24)
+    );
+    h += Math.abs(Math.sin(x * 0.07 - z * 0.06)) * 2.4 * tharsisBlend;
+  }
 
   // Crater Lake Basin East (22, -16)
   const dLake1 = Math.hypot(x - 22, z + 16);
@@ -104,24 +134,28 @@ export function groundHeightAt(x: number, z: number): number {
     h = h * (1 - t) - t * t * 2.3;
   }
 
-  // Outer Gale Crater Rim rise beyond 58m
-  if (distCenter > 58) {
-    const rimT = (distCenter - 58) / 22;
-    h += rimT * rimT * 12.0;
+  // Natural Outer Gale Crater Rim rise beyond 96m
+  if (distCenter > 96) {
+    const rimT = (distCenter - 96) / 24;
+    h += rimT * rimT * 14.0;
   }
 
-  return h;
+  return h + craterOffsetAt(x, z, craters);
 }
 
 /**
  * Approximate surface normal (nx, ny, nz) at (x, z) using central finite differences.
  */
-export function groundNormalAt(x: number, z: number): { nx: number; ny: number; nz: number } {
+export function groundNormalAt(
+  x: number,
+  z: number,
+  craters?: ExcavatedCrater[]
+): { nx: number; ny: number; nz: number } {
   const eps = 0.5;
-  const hL = groundHeightAt(x - eps, z);
-  const hR = groundHeightAt(x + eps, z);
-  const hD = groundHeightAt(x, z - eps);
-  const hU = groundHeightAt(x, z + eps);
+  const hL = groundHeightAt(x - eps, z, craters);
+  const hR = groundHeightAt(x + eps, z, craters);
+  const hD = groundHeightAt(x, z - eps, craters);
+  const hU = groundHeightAt(x, z + eps, craters);
 
   const nx = hL - hR;
   const ny = 2.0 * eps;
@@ -182,7 +216,8 @@ export function stepAstronautPhysics(
   input: PhysicsInput,
   dt: number,
   obstacles: ObstacleCircle[],
-  upgrades: PhysicsUpgrades = { speedMultiplier: 1.0, jetpackCapacityMultiplier: 1.0 }
+  upgrades: PhysicsUpgrades = { speedMultiplier: 1.0, jetpackCapacityMultiplier: 1.0 },
+  craters?: ExcavatedCrater[]
 ): { jumped: boolean; landed: boolean } {
   const clampedDt = Math.min(dt, 0.05);
   let jumped = false;
@@ -212,7 +247,7 @@ export function stepAstronautPhysics(
 
   if (inputLen > 0.05) {
     // Slope factor: uphill slightly slower, downhill slightly faster
-    const normal = groundNormalAt(body.x, body.z);
+    const normal = groundNormalAt(body.x, body.z, craters);
     const slopeAssist = Math.max(0.7, Math.min(1.25, 1.0 - (normX * normal.nx + normZ * normal.nz) * 0.6));
 
     body.vx += normX * accel * slopeAssist * clampedDt;
@@ -288,8 +323,8 @@ export function stepAstronautPhysics(
     body.distanceTraveled += Math.hypot(body.x - prevX, body.z - prevZ);
   }
 
-  // 6. Terrain Ground Contact Resolution
-  const groundY = groundHeightAt(body.x, body.z);
+  // 6. Terrain Ground Contact Resolution (including excavated craters)
+  const groundY = groundHeightAt(body.x, body.z, craters);
   if (body.y <= groundY) {
     if (!body.isGrounded && body.vy < -3.0) {
       // Landing squash impact scaled to fall speed

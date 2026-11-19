@@ -1,17 +1,24 @@
 /**
- * Ergonomic Mobile & Tablet Touch Controls
- * Virtual analog joystick on bottom-left + Jump/Jetpack, Plasma Pulse & Action buttons on bottom-right.
+ * Ergonomic Mobile & Tablet Multi-Touch Controls
+ * Uses Pointer Events with pointer capture so simultaneous movement (left thumb),
+ * camera orbit (canvas drag), and Jump/Jetpack/Fire/Excavate/Action (right thumb)
+ * work seamlessly on smartphones and tablets (both portrait and landscape).
  */
 
 import React, { useRef, useState, useCallback } from 'react';
-import { ArrowUp, Zap, Crosshair } from 'lucide-react';
+import { ArrowUp, Zap, Crosshair, Pickaxe, RefreshCw } from 'lucide-react';
 
 interface TouchControlsProps {
   onMoveChange: (vector: { x: number; y: number }) => void;
   onJumpPress: (isPressed: boolean) => void;
   onActionPress: () => void;
   onShootPress: () => void;
+  onExcavatePress: () => void;
+  onCycleWeapon: () => void;
   hasActiveTrigger: boolean;
+  equippedWeaponName: string;
+  craftedWeaponCount: number;
+  isPortrait?: boolean;
 }
 
 export const TouchControls: React.FC<TouchControlsProps> = ({
@@ -19,31 +26,30 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
   onJumpPress,
   onActionPress,
   onShootPress,
+  onExcavatePress,
+  onCycleWeapon,
   hasActiveTrigger,
+  equippedWeaponName,
+  craftedWeaponCount,
+  isPortrait = true,
 }) => {
   const joystickBaseRef = useRef<HTMLDivElement>(null);
   const [thumbPos, setThumbPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
-  const touchIdRef = useRef<number | null>(null);
+  const pointerIdRef = useRef<number | null>(null);
 
-  const radius = 48;
+  const radius = isPortrait ? 44 : 38;
 
-  const handleTouchStart = useCallback(
-    (e: React.TouchEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      if (touchIdRef.current !== null) return;
-      const touch = e.changedTouches[0];
-      touchIdRef.current = touch.identifier;
-      setIsDragging(true);
-
+  const updateVectorFromClient = useCallback(
+    (clientX: number, clientY: number) => {
       const base = joystickBaseRef.current;
       if (!base) return;
       const rect = base.getBoundingClientRect();
       const centerX = rect.left + rect.width / 2;
       const centerY = rect.top + rect.height / 2;
 
-      let dx = touch.clientX - centerX;
-      let dy = touch.clientY - centerY;
+      let dx = clientX - centerX;
+      let dy = clientY - centerY;
       const dist = Math.hypot(dx, dy);
 
       if (dist > radius) {
@@ -54,148 +60,200 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
       setThumbPos({ x: dx, y: dy });
       onMoveChange({ x: dx / radius, y: dy / radius });
     },
-    [onMoveChange]
+    [onMoveChange, radius]
   );
 
-  const handleTouchMove = useCallback(
-    (e: React.TouchEvent<HTMLDivElement>) => {
+  const handleJoystickDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
-      if (touchIdRef.current === null) return;
+      e.stopPropagation();
+      if (pointerIdRef.current !== null) return;
+      pointerIdRef.current = e.pointerId;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setIsDragging(true);
+      updateVectorFromClient(e.clientX, e.clientY);
+    },
+    [updateVectorFromClient]
+  );
 
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const touch = e.changedTouches[i];
-        if (touch.identifier === touchIdRef.current) {
-          const base = joystickBaseRef.current;
-          if (!base) return;
-          const rect = base.getBoundingClientRect();
-          const centerX = rect.left + rect.width / 2;
-          const centerY = rect.top + rect.height / 2;
+  const handleJoystickMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerId !== pointerIdRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      updateVectorFromClient(e.clientX, e.clientY);
+    },
+    [updateVectorFromClient]
+  );
 
-          let dx = touch.clientX - centerX;
-          let dy = touch.clientY - centerY;
-          const dist = Math.hypot(dx, dy);
-
-          if (dist > radius) {
-            dx = (dx / dist) * radius;
-            dy = (dy / dist) * radius;
-          }
-
-          setThumbPos({ x: dx, y: dy });
-          onMoveChange({ x: dx / radius, y: dy / radius });
-          break;
-        }
-      }
+  const handleJoystickUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerId !== pointerIdRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      pointerIdRef.current = null;
+      setIsDragging(false);
+      setThumbPos({ x: 0, y: 0 });
+      onMoveChange({ x: 0, y: 0 });
     },
     [onMoveChange]
   );
 
-  const handleTouchEnd = useCallback(
-    (e: React.TouchEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        if (e.changedTouches[i].identifier === touchIdRef.current) {
-          touchIdRef.current = null;
-          setIsDragging(false);
-          setThumbPos({ x: 0, y: 0 });
-          onMoveChange({ x: 0, y: 0 });
-          break;
-        }
-      }
-    },
-    [onMoveChange]
-  );
+  const bottomOffset = isPortrait ? 'max(env(safe-area-inset-bottom), 18px)' : 'max(env(safe-area-inset-bottom), 10px)';
+  const sideOffset = isPortrait ? 'max(env(safe-area-inset-left), 14px)' : 'max(env(safe-area-inset-left), 20px)';
+  const rightOffset = isPortrait ? 'max(env(safe-area-inset-right), 14px)' : 'max(env(safe-area-inset-right), 20px)';
 
   return (
-    <div className="absolute inset-0 pointer-events-none select-none z-20 overflow-hidden">
-      {/* Virtual Joystick */}
+    <div
+      data-testid="mobile-touch-controls"
+      className="absolute inset-0 pointer-events-none select-none z-20 overflow-hidden"
+    >
+      {/* Left: Virtual Analog Joystick */}
       <div
-        className="absolute bottom-8 left-8 pointer-events-auto touch-none"
-        style={{
-          paddingBottom: 'max(env(safe-area-inset-bottom), 12px)',
-          paddingLeft: 'max(env(safe-area-inset-left), 12px)',
-        }}
+        className="absolute pointer-events-auto touch-none"
+        style={{ bottom: bottomOffset, left: sideOffset }}
       >
         <div
           ref={joystickBaseRef}
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          onTouchEnd={handleTouchEnd}
-          onTouchCancel={handleTouchEnd}
-          className="relative w-32 h-32 rounded-full border-2 border-cyan-500/50 bg-slate-950/60 flex items-center justify-center shadow-lg"
+          data-testid="touch-joystick"
+          role="application"
+          aria-label="Joystick Virtual de Movimento"
+          onPointerDown={handleJoystickDown}
+          onPointerMove={handleJoystickMove}
+          onPointerUp={handleJoystickUp}
+          onPointerCancel={handleJoystickUp}
+          className={`relative rounded-full border-2 border-cyan-400/50 bg-slate-950/65 flex items-center justify-center shadow-xl ${
+            isPortrait ? 'w-28 h-28' : 'w-24 h-24'
+          }`}
         >
-          <div className="absolute w-full h-[1px] bg-cyan-500/20" />
-          <div className="absolute h-full w-[1px] bg-cyan-500/20" />
+          <div className="absolute w-full h-[1px] bg-cyan-400/20 pointer-events-none" />
+          <div className="absolute h-full w-[1px] bg-cyan-400/20 pointer-events-none" />
+          <div className="absolute inset-2.5 rounded-full border border-dashed border-cyan-500/25 pointer-events-none" />
 
           <div
-            className={`w-14 h-14 rounded-full border-2 border-cyan-400 bg-cyan-600 shadow-md flex items-center justify-center ${
-              isDragging ? 'scale-110' : 'scale-100'
-            }`}
+            className={`rounded-full border-2 border-cyan-300 bg-cyan-600/95 shadow-lg flex items-center justify-center pointer-events-none ${
+              isPortrait ? 'w-12 h-12' : 'w-10 h-10'
+            } ${isDragging ? 'scale-105 bg-cyan-500' : 'scale-100'}`}
             style={{ transform: `translate(${thumbPos.x}px, ${thumbPos.y}px)` }}
           >
-            <div className="w-4 h-4 rounded-full bg-white/80" />
+            <div className="w-3.5 h-3.5 rounded-full bg-white/85" />
           </div>
+        </div>
+        <div className="text-[9px] font-bold text-center text-slate-300/80 mt-1 tracking-wider uppercase">
+          Arraste tela p/ câmera
         </div>
       </div>
 
-      {/* Action Buttons: Pulse, Jump/Jet, Action */}
+      {/* Right: Ergonomic Action Cluster (Excavate, Cycle Weapon, Shoot, Jump/Jet, Primary Action) */}
       <div
-        className="absolute bottom-8 right-8 pointer-events-auto flex items-end gap-3 touch-none"
-        style={{
-          paddingBottom: 'max(env(safe-area-inset-bottom), 12px)',
-          paddingRight: 'max(env(safe-area-inset-right), 12px)',
-        }}
+        className="absolute pointer-events-auto flex flex-col items-end gap-2 touch-none"
+        style={{ bottom: bottomOffset, right: rightOffset }}
       >
-        <button
-          onTouchStart={(e) => {
-            e.preventDefault();
-            onShootPress();
-          }}
-          className="w-16 h-16 rounded-full bg-slate-900/90 border-2 border-sky-500/75 active:scale-95 flex flex-col items-center justify-center shadow-xl"
-          title="Disparar Pulso de Plasma"
-        >
-          <Crosshair className="w-6 h-6 text-sky-400" />
-          <span className="text-[9px] font-black tracking-wider text-sky-200 mt-0.5">PULSO</span>
-        </button>
+        {/* Secondary Row: Excavate Crater + Weapon Switch */}
+        <div className="flex items-center gap-2">
+          {craftedWeaponCount > 1 && (
+            <button
+              type="button"
+              data-testid="touch-weapon-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCycleWeapon();
+              }}
+              className="h-11 px-3 rounded-full bg-slate-950/88 border border-sky-400/60 active:scale-95 flex items-center gap-1.5 shadow-lg text-sky-200 cursor-pointer"
+              aria-label={`Trocar Arma (Atual: ${equippedWeaponName})`}
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-sky-400" />
+              <span className="text-[10px] font-black tracking-wide max-w-[76px] truncate">
+                {equippedWeaponName.split(' ')[0]}
+              </span>
+            </button>
+          )}
 
-        <button
-          onTouchStart={(e) => {
-            e.preventDefault();
-            onJumpPress(true);
-          }}
-          onTouchEnd={(e) => {
-            e.preventDefault();
-            onJumpPress(false);
-          }}
-          className="w-18 h-18 rounded-full bg-slate-900/90 border-2 border-amber-500/70 active:scale-95 flex flex-col items-center justify-center shadow-xl"
-          title="Salto / Jetpack"
-        >
-          <ArrowUp className="w-6 h-6 text-amber-400" />
-          <span className="text-[9px] font-black tracking-wider text-amber-200 mt-0.5">
-            PULAR/JET
-          </span>
-        </button>
-
-        <button
-          onTouchStart={(e) => {
-            e.preventDefault();
-            onActionPress();
-          }}
-          className={`w-20 h-20 rounded-full border-2 active:scale-95 flex flex-col items-center justify-center shadow-2xl ${
-            hasActiveTrigger
-              ? 'bg-emerald-700 border-emerald-300 ring-4 ring-emerald-400/40'
-              : 'bg-slate-900/90 border-slate-600 text-slate-400'
-          }`}
-          title="Construir / Acelerar / Reparar"
-        >
-          <Zap className={`w-7 h-7 ${hasActiveTrigger ? 'text-white' : 'text-slate-400'}`} />
-          <span
-            className={`text-[11px] font-black tracking-wider mt-0.5 ${
-              hasActiveTrigger ? 'text-white' : 'text-slate-400'
-            }`}
+          <button
+            type="button"
+            data-testid="touch-excavate-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onExcavatePress();
+            }}
+            className="h-11 px-3.5 rounded-full bg-amber-950/92 border-2 border-amber-400/75 active:scale-95 flex items-center gap-1.5 shadow-lg text-amber-200 cursor-pointer"
+            aria-label="Escavar Cratera no Solo"
           >
-            AÇÃO
-          </span>
-        </button>
+            <Pickaxe className="w-4 h-4 text-amber-400" />
+            <span className="text-[10px] font-black tracking-wider">ESCAVAR</span>
+          </button>
+        </div>
+
+        {/* Primary Thumb Arc: Shoot, Jump/Jetpack, Action */}
+        <div className="flex items-end gap-2.5">
+          <button
+            type="button"
+            data-testid="touch-shoot-btn"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onShootPress();
+            }}
+            className={`rounded-full bg-slate-950/90 border-2 border-sky-400/80 active:scale-95 flex flex-col items-center justify-center shadow-xl cursor-pointer ${
+              isPortrait ? 'w-14 h-14' : 'w-13 h-13'
+            }`}
+            aria-label="Disparar Arma"
+          >
+            <Crosshair className="w-5 h-5 text-sky-400" />
+            <span className="text-[8px] font-black tracking-wider text-sky-200 mt-0.5">TIRO</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="touch-jump-btn"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              e.currentTarget.setPointerCapture(e.pointerId);
+              onJumpPress(true);
+            }}
+            onPointerUp={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onJumpPress(false);
+            }}
+            onPointerCancel={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onJumpPress(false);
+            }}
+            className={`rounded-full bg-slate-950/90 border-2 border-amber-400/80 active:scale-95 flex flex-col items-center justify-center shadow-xl cursor-pointer ${
+              isPortrait ? 'w-16 h-16' : 'w-14 h-14'
+            }`}
+            aria-label="Pular ou Usar Jetpack"
+          >
+            <ArrowUp className="w-5 h-5 text-amber-400" />
+            <span className="text-[8px] font-black tracking-wider text-amber-200 mt-0.5">
+              JETPACK
+            </span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="touch-action-btn"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onActionPress();
+            }}
+            className={`rounded-full border-2 active:scale-95 flex flex-col items-center justify-center shadow-2xl cursor-pointer ${
+              isPortrait ? 'w-18 h-18' : 'w-16 h-16'
+            } ${
+              hasActiveTrigger
+                ? 'bg-emerald-600 border-emerald-200 ring-4 ring-emerald-400/40 text-white'
+                : 'bg-slate-950/90 border-slate-600 text-slate-300'
+            }`}
+            aria-label="Ação: Construir, Reparar ou Interagir"
+          >
+            <Zap className={`w-6 h-6 ${hasActiveTrigger ? 'text-white' : 'text-slate-400'}`} />
+            <span className="text-[10px] font-black tracking-wider mt-0.5">AÇÃO</span>
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -1,12 +1,13 @@
 /**
- * Mars Colony Threats, Enemy AI, Plasma Defense & Module Damage/Repair Simulation
- * Pure TypeScript simulation shared by Solo & 3-Player Co-op.
+ * Mars Colony Threats, Upgraded Enemy AI (Strafing, Ranged Acid/Plasma, Shockwaves),
+ * Weapon Volley Combat (Pistol, Rifle, Shotgun, Piercing Railgun) & Module Repairs.
  */
 
 import { BuildingKey, ColonyState } from './marsColonyLogic';
+import { getWeaponDef, WeaponId } from './marsChemistry';
 import { groundHeightAt } from './marsPhysics';
 
-export type EnemyKind = 'crawler' | 'drone' | 'brute';
+export type EnemyKind = 'crawler' | 'drone' | 'brute' | 'stalker';
 
 export interface MarsEnemy {
   id: string;
@@ -23,6 +24,7 @@ export interface MarsEnemy {
   radius: number;
   attackCooldown: number;
   hitFlashTimer: number;
+  strafeDir: number; // -1 or 1 for tactical drone/stalker strafing
   targetBuilding: BuildingKey | null;
 }
 
@@ -36,6 +38,11 @@ export interface PlasmaBolt {
   damage: number;
   life: number;
   fromTurret: boolean;
+  fromEnemy?: boolean;
+  piercing?: boolean;
+  weaponId?: WeaponId;
+  colorHex?: string;
+  hitEnemyIds?: string[];
 }
 
 export interface EnemyRewardDrop {
@@ -46,6 +53,9 @@ export interface EnemyRewardDrop {
   regolith: number;
   ice: number;
   biomass: number;
+  iron: number;
+  titanium: number;
+  sulfur: number;
 }
 
 export const BUILDING_COORDS: Record<BuildingKey, { x: number; z: number; label: string }> = {
@@ -55,7 +65,7 @@ export const BUILDING_COORDS: Record<BuildingKey, { x: number; z: number; label:
   autoMiner: { x: 18, z: 7, label: 'Sonda Mineradora' },
   researchLab: { x: -12, z: -6, label: 'Laboratório' },
   defenseTurret: { x: 10, z: -2, label: 'Torre Laser' },
-  bioDome: { x: 0, z: -19, label: 'Biodomo' },
+  bioDome: { x: 0, z: -19, label: 'Redoma Biodomo' },
   habitat: { x: -11, z: 12, label: 'Habitat' },
   commsArray: { x: 12, z: 14, label: 'Antena Orbital' },
   geothermalPlant: { x: -20, z: -4, label: 'Usina Geotérmica' },
@@ -69,22 +79,25 @@ export function createEnemy(
   seedId: string
 ): MarsEnemy {
   const gy = groundHeightAt(x, z);
+  const strafeDir = seedId.charCodeAt(seedId.length - 1) % 2 === 0 ? 1 : -1;
+
   if (kind === 'drone') {
     return {
       id: seedId,
       kind,
       x,
-      y: gy + 1.5,
+      y: gy + 1.65,
       z,
       vx: 0,
       vz: 0,
       yaw: 0,
-      hp: 80,
-      maxHp: 80,
-      speed: 4.8,
-      radius: 0.8,
-      attackCooldown: 0.8,
+      hp: 88,
+      maxHp: 88,
+      speed: 5.1,
+      radius: 0.82,
+      attackCooldown: 1.1,
       hitFlashTimer: 0,
+      strafeDir,
       targetBuilding: null,
     };
   }
@@ -98,12 +111,33 @@ export function createEnemy(
       vx: 0,
       vz: 0,
       yaw: 0,
-      hp: 165,
-      maxHp: 165,
-      speed: 2.9,
-      radius: 1.15,
+      hp: 185,
+      maxHp: 185,
+      speed: 3.1,
+      radius: 1.2,
+      attackCooldown: 1.2,
+      hitFlashTimer: 0,
+      strafeDir,
+      targetBuilding: null,
+    };
+  }
+  if (kind === 'stalker') {
+    return {
+      id: seedId,
+      kind,
+      x,
+      y: gy,
+      z,
+      vx: 0,
+      vz: 0,
+      yaw: 0,
+      hp: 95,
+      maxHp: 95,
+      speed: 5.8,
+      radius: 0.78,
       attackCooldown: 1.0,
       hitFlashTimer: 0,
+      strafeDir,
       targetBuilding: null,
     };
   }
@@ -116,12 +150,13 @@ export function createEnemy(
     vx: 0,
     vz: 0,
     yaw: 0,
-    hp: 55,
-    maxHp: 55,
-    speed: 4.1,
-    radius: 0.72,
-    attackCooldown: 0.8,
+    hp: 60,
+    maxHp: 60,
+    speed: 4.4,
+    radius: 0.75,
+    attackCooldown: 0.85,
     hitFlashTimer: 0,
+    strafeDir,
     targetBuilding: null,
   };
 }
@@ -149,12 +184,81 @@ export function createPlasmaBolt(
     damage: Math.round(baseDamage * damageMultiplier),
     life: 1.4,
     fromTurret,
+    colorHex: fromTurret ? '#ef4444' : '#38bdf8',
   };
 }
 
 /**
- * Picks a built colony structure for an enemy to raid, or falls back to attacking the player.
+ * Generates 1..4 projectiles based on the astronaut's equipped crafted weapon.
  */
+export function createWeaponVolley(params: {
+  x: number;
+  y: number;
+  z: number;
+  dirX: number;
+  dirZ: number;
+  weaponId: WeaponId;
+  hasPulseMk2: boolean;
+  damageMultiplier: number;
+}): PlasmaBolt[] {
+  const weapon = getWeaponDef(params.weaponId);
+  const baseAngle = Math.atan2(params.dirX, params.dirZ);
+  const mk2Bonus = params.hasPulseMk2 ? 1.35 : 1.0;
+  const dmg = Math.round(weapon.damagePerBolt * mk2Bonus * params.damageMultiplier);
+  const count = weapon.boltCount;
+  const bolts: PlasmaBolt[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const offset =
+      count === 1
+        ? 0
+        : -weapon.spreadRad / 2 + (weapon.spreadRad * i) / (count - 1);
+    const angle = baseAngle + offset;
+    const vx = Math.sin(angle) * weapon.boltSpeed;
+    const vz = Math.cos(angle) * weapon.boltSpeed;
+    bolts.push({
+      id: `bolt-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+      x: params.x,
+      y: params.y,
+      z: params.z,
+      vx,
+      vz,
+      damage: dmg,
+      life: weapon.piercing ? 1.65 : weapon.id === 'ion-shotgun' ? 0.72 : 1.35,
+      fromTurret: false,
+      piercing: weapon.piercing,
+      weaponId: weapon.id,
+      colorHex: weapon.boltColorHex,
+      hitEnemyIds: [],
+    });
+  }
+  return bolts;
+}
+
+function createEnemyProjectile(
+  enemy: MarsEnemy,
+  targetX: number,
+  targetZ: number
+): PlasmaBolt {
+  const dx = targetX - enemy.x;
+  const dz = targetZ - enemy.z;
+  const len = Math.hypot(dx, dz) || 1;
+  const speed = enemy.kind === 'stalker' ? 16.5 : 14.5;
+  return {
+    id: `ebolt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    x: enemy.x,
+    y: enemy.y + (enemy.kind === 'drone' ? 0.1 : 0.85),
+    z: enemy.z,
+    vx: (dx / len) * speed,
+    vz: (dz / len) * speed,
+    damage: enemy.kind === 'stalker' ? 8 : 6,
+    life: 1.5,
+    fromTurret: false,
+    fromEnemy: true,
+    colorHex: enemy.kind === 'stalker' ? '#84cc16' : '#fb7185',
+  };
+}
+
 function chooseTargetCoords(
   enemy: MarsEnemy,
   colonyState: ColonyState,
@@ -164,13 +268,13 @@ function chooseTargetCoords(
     (k) => colonyState.buildings[k] && colonyState.buildingHealth[k] > 15
   );
 
-  // If player is within 10m, chase player directly
+  // Stalkers prefer hunting the astronaut; drones/crawlers engage within 13.5m
   const distPlayer = Math.hypot(playerPos.x - enemy.x, playerPos.z - enemy.z);
-  if (distPlayer < 10.5 || builtKeys.length === 0) {
+  const aggroRange = enemy.kind === 'stalker' ? 22.0 : 13.5;
+  if (distPlayer < aggroRange || builtKeys.length === 0) {
     return { x: playerPos.x, z: playerPos.z, buildingKey: null };
   }
 
-  // Prefer keeping existing valid targetBuilding
   if (
     enemy.targetBuilding &&
     colonyState.buildings[enemy.targetBuilding] &&
@@ -180,7 +284,6 @@ function chooseTargetCoords(
     return { x: c.x, z: c.z, buildingKey: enemy.targetBuilding };
   }
 
-  // Otherwise pick nearest built structure
   let bestKey: BuildingKey | null = null;
   let bestDist = Infinity;
   for (const key of builtKeys) {
@@ -232,7 +335,7 @@ export function stepEnemiesAndCombat(params: {
     enemies.length > 0
   ) {
     const hasTurretAI = params.colonyState.unlockedTechs.includes('tech-turret-ai');
-    const maxRange = hasTurretAI ? 28 : 19;
+    const maxRange = hasTurretAI ? 30 : 20;
     let nearest: MarsEnemy | null = null;
     let bestD = Infinity;
     for (const e of enemies) {
@@ -243,47 +346,75 @@ export function stepEnemiesAndCombat(params: {
       }
     }
     if (nearest) {
-      const ty = groundHeightAt(10, -2) + 2.6;
+      const ty = groundHeightAt(10, -2, params.colonyState.craters) + 2.6;
       nextBolts.push(
         createPlasmaBolt(10, ty, -2, nearest.x - 10, nearest.z + 2, hasTurretAI, true)
       );
       turretFiredAt = { x: nearest.x, y: nearest.y + 0.8, z: nearest.z };
-      nextTurretCooldown = hasTurretAI ? 0.55 : 0.85;
+      nextTurretCooldown = hasTurretAI ? 0.52 : 0.82;
     }
   }
 
-  // 2. Step Plasma Bolts & Check Collisions against Enemies
+  // 2. Step Player/Turret & Enemy Projectiles
   for (const b of params.bolts) {
     const nb: PlasmaBolt = {
       ...b,
       x: b.x + b.vx * dt,
       z: b.z + b.vz * dt,
       life: b.life - dt,
+      hitEnemyIds: b.hitEnemyIds ? [...b.hitEnemyIds] : undefined,
     };
     if (nb.life <= 0) continue;
 
-    let hitEnemy = false;
+    if (nb.fromEnemy) {
+      // Check collision against astronaut
+      const distP = Math.hypot(nb.x - params.playerPos.x, nb.z - params.playerPos.z);
+      if (distP <= 0.95) {
+        playerO2Damage += nb.damage;
+        continue;
+      }
+      // Check collision against built structures
+      let hitBuilding = false;
+      for (const k of Object.keys(params.colonyState.buildings) as BuildingKey[]) {
+        if (!params.colonyState.buildings[k]) continue;
+        const c = BUILDING_COORDS[k];
+        if (Math.hypot(nb.x - c.x, nb.z - c.z) <= 1.8) {
+          buildingDamage[k] = (buildingDamage[k] || 0) + nb.damage;
+          hitBuilding = true;
+          break;
+        }
+      }
+      if (!hitBuilding) nextBolts.push(nb);
+      continue;
+    }
+
+    let consumed = false;
     for (const enemy of enemies) {
       if (enemy.hp <= 0) continue;
+      if (nb.piercing && nb.hitEnemyIds?.includes(enemy.id)) continue;
       const dist = Math.hypot(nb.x - enemy.x, nb.z - enemy.z);
-      if (dist <= enemy.radius + 0.45) {
+      if (dist <= enemy.radius + 0.5) {
         enemy.hp -= nb.damage;
         enemy.hitFlashTimer = 0.16;
-        // Knockback
         const bLen = Math.hypot(nb.vx, nb.vz) || 1;
-        enemy.x += (nb.vx / bLen) * 0.55;
-        enemy.z += (nb.vz / bLen) * 0.55;
-        hitEnemy = true;
-        break;
+        const knock = nb.weaponId === 'ion-shotgun' ? 0.95 : nb.piercing ? 0.8 : 0.52;
+        enemy.x += (nb.vx / bLen) * knock;
+        enemy.z += (nb.vz / bLen) * knock;
+        if (nb.piercing) {
+          nb.hitEnemyIds = [...(nb.hitEnemyIds || []), enemy.id];
+        } else {
+          consumed = true;
+          break;
+        }
       }
     }
 
-    if (!hitEnemy) {
+    if (!consumed) {
       nextBolts.push(nb);
     }
   }
 
-  // 3. Step Alive Enemies & Collect Kills
+  // 3. Step Alive Enemies with Upgraded Tactical AI
   const survivingEnemies: MarsEnemy[] = [];
   for (const enemy of enemies) {
     if (enemy.hp <= 0) {
@@ -294,7 +425,10 @@ export function stepEnemiesAndCombat(params: {
         z: enemy.z,
         regolith: enemy.kind === 'brute' ? 3 : 1,
         ice: enemy.kind === 'drone' ? 2 : 1,
-        biomass: enemy.kind === 'brute' ? 2 : enemy.kind === 'crawler' ? 1 : 0,
+        biomass: enemy.kind === 'brute' || enemy.kind === 'stalker' ? 2 : 1,
+        iron: enemy.kind === 'brute' ? 3 : enemy.kind === 'drone' ? 2 : 1,
+        titanium: enemy.kind === 'brute' ? 2 : enemy.kind === 'stalker' ? 1 : 0,
+        sulfur: enemy.kind === 'stalker' ? 2 : enemy.kind === 'crawler' ? 1 : 0,
       });
       continue;
     }
@@ -307,34 +441,64 @@ export function stepEnemiesAndCombat(params: {
 
     const dx = target.x - enemy.x;
     const dz = target.z - enemy.z;
-    const dist = Math.hypot(dx, dz);
+    const dist = Math.hypot(dx, dz) || 0.001;
+    const dirX = dx / dist;
+    const dirZ = dz / dist;
+    enemy.yaw = Math.atan2(dirX, dirZ);
 
-    const stopDist = target.buildingKey ? 2.4 : 1.4;
-    if (dist > stopDist) {
-      const dirX = dx / (dist || 1);
-      const dirZ = dz / (dist || 1);
-      enemy.vx = dirX * enemy.speed;
-      enemy.vz = dirZ * enemy.speed;
+    // Tactical ranged strafing for Drones & Stalkers
+    if (enemy.kind === 'drone' || enemy.kind === 'stalker') {
+      const preferredRange = enemy.kind === 'drone' ? 9.5 : 8.0;
+      const strafeX = -dirZ * enemy.strafeDir;
+      const strafeZ = dirX * enemy.strafeDir;
+
+      if (dist > preferredRange + 1.5) {
+        enemy.vx = (dirX * 0.85 + strafeX * 0.3) * enemy.speed;
+        enemy.vz = (dirZ * 0.85 + strafeZ * 0.3) * enemy.speed;
+      } else if (dist < preferredRange - 2.0) {
+        enemy.vx = (-dirX * 0.45 + strafeX * 0.85) * enemy.speed;
+        enemy.vz = (-dirZ * 0.45 + strafeZ * 0.85) * enemy.speed;
+      } else {
+        enemy.vx = strafeX * enemy.speed * 0.85;
+        enemy.vz = strafeZ * enemy.speed * 0.85;
+      }
       enemy.x += enemy.vx * dt;
       enemy.z += enemy.vz * dt;
-      enemy.yaw = Math.atan2(dirX, dirZ);
+
+      // Ranged plasma/acid fire
+      if (dist <= preferredRange + 5.5 && enemy.attackCooldown <= 0) {
+        enemy.attackCooldown = enemy.kind === 'stalker' ? 1.75 : 2.1;
+        nextBolts.push(createEnemyProjectile(enemy, target.x, target.z));
+      }
     } else {
-      enemy.vx = 0;
-      enemy.vz = 0;
-      // Attack target if cooldown ready
-      if (enemy.attackCooldown <= 0) {
-        enemy.attackCooldown = enemy.kind === 'brute' ? 1.6 : 1.3;
-        if (target.buildingKey) {
-          const dmg = enemy.kind === 'brute' ? 14 : 8;
-          buildingDamage[target.buildingKey] = (buildingDamage[target.buildingKey] || 0) + dmg;
-        } else {
-          playerO2Damage += enemy.kind === 'brute' ? 10 : 6;
+      // Melee Charger / Flanker AI for Crawlers & Basalt Brutes
+      const stopDist = target.buildingKey ? 2.4 : 1.45;
+      if (dist > stopDist) {
+        const flankFactor = enemy.kind === 'crawler' && dist < 8 ? 0.32 * enemy.strafeDir : 0;
+        const moveX = dirX - dirZ * flankFactor;
+        const moveZ = dirZ + dirX * flankFactor;
+        const mLen = Math.hypot(moveX, moveZ) || 1;
+        enemy.vx = (moveX / mLen) * enemy.speed;
+        enemy.vz = (moveZ / mLen) * enemy.speed;
+        enemy.x += enemy.vx * dt;
+        enemy.z += enemy.vz * dt;
+      } else {
+        enemy.vx = 0;
+        enemy.vz = 0;
+        if (enemy.attackCooldown <= 0) {
+          enemy.attackCooldown = enemy.kind === 'brute' ? 1.65 : 1.25;
+          if (target.buildingKey) {
+            const dmg = enemy.kind === 'brute' ? 15 : 8;
+            buildingDamage[target.buildingKey] = (buildingDamage[target.buildingKey] || 0) + dmg;
+          } else {
+            playerO2Damage += enemy.kind === 'brute' ? 12 : 6;
+          }
         }
       }
     }
 
-    const gy = groundHeightAt(enemy.x, enemy.z);
-    enemy.y = enemy.kind === 'drone' ? gy + 1.45 : gy;
+    const gy = groundHeightAt(enemy.x, enemy.z, params.colonyState.craters);
+    enemy.y = enemy.kind === 'drone' ? gy + 1.6 : gy;
 
     survivingEnemies.push(enemy);
   }
@@ -352,9 +516,6 @@ export function stepEnemiesAndCombat(params: {
   };
 }
 
-/**
- * Finds nearest damaged built structure within repair range
- */
 export function findRepairableBuildingNear(
   playerPos: { x: number; z: number },
   colonyState: ColonyState

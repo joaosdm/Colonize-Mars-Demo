@@ -63,11 +63,16 @@ export type ClientToServerMessage =
       activeTriggerId: string | null;
       isActionPressed?: boolean;
     }
-  | { type: 'resource:collect'; resourceId: string; resourceType: 'regolith' | 'ice' }
+  | {
+      type: 'resource:collect';
+      resourceId: string;
+      resourceType: 'regolith' | 'ice' | 'iron' | 'titanium' | 'silicon' | 'sulfur';
+    }
   | { type: 'trigger:complete'; triggerId: string }
   | { type: 'building:repair'; buildingKey: BuildingKey }
   | { type: 'player:shoot'; x: number; y: number; z: number; dirX: number; dirZ: number }
   | { type: 'tech:research'; techId: TechId }
+  | { type: 'mission-control:reroll' }
   | { type: 'threats:toggle'; enabled: boolean }
   | { type: 'sandbox:enable' };
 

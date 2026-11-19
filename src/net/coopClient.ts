@@ -148,7 +148,10 @@ export class CoopClient {
     this.send({ type: 'player:move', ...data });
   }
 
-  public emitResourceCollect(resourceId: string, resourceType: 'regolith' | 'ice') {
+  public emitResourceCollect(
+    resourceId: string,
+    resourceType: 'regolith' | 'ice' | 'iron' | 'titanium' | 'silicon' | 'sulfur'
+  ) {
     this.send({ type: 'resource:collect', resourceId, resourceType });
   }
 
@@ -166,6 +169,10 @@ export class CoopClient {
 
   public emitTechResearch(techId: TechId) {
     this.send({ type: 'tech:research', techId });
+  }
+
+  public emitMissionControlReroll() {
+    this.send({ type: 'mission-control:reroll' });
   }
 
   public emitToggleThreats(enabled: boolean) {

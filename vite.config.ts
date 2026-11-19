@@ -11,6 +11,19 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      target: 'es2020',
+      rollupOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (id.includes('node_modules/three')) return 'vendor-three';
+            if (id.includes('node_modules/lucide-react')) return 'vendor-icons';
+            if (id.includes('node_modules/react')) return 'vendor-react';
+            return undefined;
+          },
+        },
+      },
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.

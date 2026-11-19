@@ -44,15 +44,28 @@ class SoundManager {
   /**
    * Crisp sci-fi "bip" when vacuuming / picking up a resource block
    */
-  public playResourcePickup(type: 'ice' | 'regolith' = 'regolith') {
+  public playResourcePickup(
+    type: 'ice' | 'regolith' | 'iron' | 'titanium' | 'silicon' | 'sulfur' = 'regolith'
+  ) {
     const ctx = this.getContext();
     if (!ctx) return;
 
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
 
-    const baseFreq = type === 'ice' ? 1480 : 1050; // Higher crystal chime for ice, warm metallic for regolith
-    const targetFreq = type === 'ice' ? 2200 : 1750;
+    const baseFreq =
+      type === 'ice'
+        ? 1480
+        : type === 'titanium'
+        ? 1620
+        : type === 'silicon'
+        ? 1360
+        : type === 'sulfur'
+        ? 920
+        : type === 'iron'
+        ? 840
+        : 1050;
+    const targetFreq = baseFreq * 1.55;
 
     osc.type = 'sine';
     osc.frequency.setValueAtTime(baseFreq, ctx.currentTime);
@@ -393,6 +406,156 @@ class SoundManager {
       gain.connect(ctx.destination);
       osc.start(t);
       osc.stop(t + 0.16);
+    });
+  }
+
+  /**
+   * Deep seismic drill & rock fracture burst when carving a Martian crater
+   */
+  public playCraterDrill() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const filter = ctx.createBiquadFilter();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(145, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(48, ctx.currentTime + 0.36);
+
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(420, ctx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(140, ctx.currentTime + 0.36);
+
+    gain.gain.setValueAtTime(0.14, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.38);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.4);
+  }
+
+  /**
+   * Bubbling crystalline synthesis chime for ISRU chemical extraction
+   */
+  public playRefinerySynth() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    [480, 640, 960, 1280].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const t = ctx.currentTime + idx * 0.05;
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.08, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.19);
+    });
+  }
+
+  /**
+   * Distinct weapon fire SFX based on equipped weapon class
+   */
+  public playWeaponFire(weaponId: string) {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    if (weaponId === 'titanium-railgun') {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(1600, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(110, ctx.currentTime + 0.24);
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.26);
+      return;
+    }
+
+    if (weaponId === 'ion-shotgun') {
+      [0, 0.025].forEach((off) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const t = ctx.currentTime + off;
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(340, t);
+        osc.frequency.exponentialRampToValueAtTime(75, t + 0.16);
+        gain.gain.setValueAtTime(0.1, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.17);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.18);
+      });
+      return;
+    }
+
+    if (weaponId === 'plasma-rifle') {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(1240, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(380, ctx.currentTime + 0.09);
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.11);
+      return;
+    }
+
+    this.playLaserPulse();
+  }
+
+  /**
+   * Starship thruster ignition rumble when launching into Mars orbit
+   */
+  public playOrbitalLaunch() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(75, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(260, ctx.currentTime + 0.45);
+    gain.gain.setValueAtTime(0.11, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.52);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.55);
+  }
+
+  /**
+   * Pleasant chime when consuming glass-dome food rations
+   */
+  public playEatRation() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    [523.25, 659.25].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const t = ctx.currentTime + idx * 0.06;
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.08, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.15);
     });
   }
 }

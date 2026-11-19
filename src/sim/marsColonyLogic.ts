@@ -13,6 +13,32 @@ import {
   createInitialDustStormState,
   stepDustStormLifecycle,
 } from './marsWeather';
+import {
+  DailyObjectiveKind,
+  DailyObjectiveReward,
+  MissionControlState,
+  createInitialMissionControlState,
+  hasNonZeroReward,
+  progressDailyObjectives,
+  rerollDailyObjectives,
+  syncMissionControlSol,
+} from './missionControl';
+import {
+  CropTypeId,
+  DomeCropBed,
+  ExcavatedCrater,
+  PLANETARY_SITES,
+  computeExcavationYield,
+  createInitialDomeCrops,
+  getCropDef,
+  stepDomeCrops,
+} from './marsWorld';
+import {
+  WeaponId,
+  craftWeapon,
+  executeRefineryRecipe,
+  getWeaponDef,
+} from './marsChemistry';
 
 export const MARS_GRAVITY = 3.72; // m/s^2 (0.38g)
 
@@ -291,6 +317,13 @@ export interface ColonyState {
   waterIce: number;
   water: number;
   biomass: number;
+  iron: number;
+  titanium: number;
+  silicon: number;
+  sulfur: number;
+  fuel: number;
+  food: number;
+  hunger: number; // 0..100% astronaut nutrition / satiety
   habitability: number; // 0..100%
   solDay: number;
   isNearO2Source: boolean;
@@ -302,9 +335,15 @@ export interface ColonyState {
   activeConstructions: ActiveConstruction[];
   activeTechResearch: ActiveTechResearch | null;
   dustStorm: DustStormState;
-  cropsPlantedCount: number; // 0..3
+  cropsPlantedCount: number; // 0..3 exterior plots
+  domeCrops: DomeCropBed[]; // 4 glass-dome food cultivation beds
+  craftedWeapons: WeaponId[];
+  equippedWeapon: WeaponId;
+  craters: ExcavatedCrater[];
+  discoveredSites: string[];
   unlockedTechs: TechId[];
   activeContract: DynamicContract | null;
+  missionControl: MissionControlState;
   waterGenAccumulator: number;
   biomassGenAccumulator: number;
   minerGenAccumulator: number;
@@ -459,8 +498,15 @@ export function createInitialColonyState(
     energy: computeTotalColonyEnergy(initialBuildings, activeRoles, 1.0),
     regolith: 0,
     waterIce: 0,
-    water: 0,
+    water: 2,
     biomass: 0,
+    iron: 2,
+    titanium: 0,
+    silicon: 2,
+    sulfur: 0,
+    fuel: 4,
+    food: 6,
+    hunger: 100,
     habitability: 4,
     solDay: 1,
     isNearO2Source: true,
@@ -485,8 +531,14 @@ export function createInitialColonyState(
     activeTechResearch: null,
     dustStorm: createInitialDustStormState(),
     cropsPlantedCount: 0,
+    domeCrops: createInitialDomeCrops(),
+    craftedWeapons: ['pulse-pistol'],
+    equippedWeapon: 'pulse-pistol',
+    craters: [],
+    discoveredSites: [],
     unlockedTechs: [],
     activeContract: null,
+    missionControl: createInitialMissionControlState(1, threatsEnabled),
     waterGenAccumulator: 0,
     biomassGenAccumulator: 0,
     minerGenAccumulator: 0,
@@ -665,6 +717,10 @@ export function advanceConstructions(
       if (cfg.buildingKey === 'habitat') {
         nextState.oxygenMax += 25;
         nextState.oxygen = nextState.oxygenMax;
+        nextState.missionControl = createInitialMissionControlState(
+          nextState.solDay,
+          nextState.threatsEnabled
+        );
       }
       if (cfg.buildingKey === 'commsArray' && !nextState.activeContract) {
         nextState.activeContract = generateNextContract(1);
@@ -676,6 +732,10 @@ export function advanceConstructions(
       nextState.biomass += 2;
       nextState.cropsPlantedCount = nextPlots.length;
     }
+  }
+
+  if (nextState.buildings.habitat && completedIds.length > 0) {
+    nextState = applyMissionControlProgress(nextState, 'complete-build', completedIds.length).state;
   }
 
   nextState.energy = computeTotalColonyEnergy(
@@ -906,14 +966,15 @@ export function updateColonyTick(
   // Passive Water Extractor (halted if broken below 20% health)
   let nextWater = state.water;
   let waterAcc = state.waterGenAccumulator;
+  let waterGained = 0;
   if (state.buildings.waterExtractor && state.buildingHealth.waterExtractor > 20) {
     const eff = state.buildingHealth.waterExtractor / 100;
     const waterRate = (state.unlockedTechs.includes('tech-hydro') ? 0.55 : 0.35) * eff;
     waterAcc += deltaSeconds * waterRate;
     if (waterAcc >= 1.0) {
-      const gained = Math.floor(waterAcc);
-      nextWater += gained;
-      waterAcc -= gained;
+      waterGained = Math.floor(waterAcc);
+      nextWater += waterGained;
+      waterAcc -= waterGained;
     }
   }
 
@@ -921,32 +982,46 @@ export function updateColonyTick(
   let nextRegolith = state.regolith;
   let nextIce = state.waterIce;
   let minerAcc = state.minerGenAccumulator;
+  let minerRegGained = 0;
+  let minerIceGained = 0;
   if (state.buildings.autoMiner && state.buildingHealth.autoMiner > 20) {
     const eff = state.buildingHealth.autoMiner / 100;
     minerAcc += deltaSeconds * 0.22 * eff;
     if (minerAcc >= 1.0) {
-      const gained = Math.floor(minerAcc);
-      nextRegolith += gained;
+      minerRegGained = Math.floor(minerAcc);
+      nextRegolith += minerRegGained;
       if (state.solDay % 2 === 0 || nextIce < 6) {
-        nextIce += gained;
+        minerIceGained = minerRegGained;
+        nextIce += minerIceGained;
       }
-      minerAcc -= gained;
+      minerAcc -= minerRegGained;
     }
   }
 
   // Passive BioDome Crop Biomass
   let nextBiomass = state.biomass;
   let bioAcc = state.biomassGenAccumulator;
+  let bioGained = 0;
   if (state.cropsPlantedCount > 0 && state.buildingHealth.bioDome > 20) {
     const bioRate =
       state.cropsPlantedCount * (state.unlockedTechs.includes('tech-hydro') ? 0.26 : 0.14);
     bioAcc += deltaSeconds * bioRate;
     if (bioAcc >= 1.0) {
-      const gained = Math.floor(bioAcc);
-      nextBiomass += gained;
-      bioAcc -= gained;
+      bioGained = Math.floor(bioAcc);
+      nextBiomass += bioGained;
+      bioAcc -= bioGained;
     }
   }
+
+  // Glass Dome Food Crops growth (speeds up with Bio-Engineered Seeds tech & BioDome)
+  const cropSpeed =
+    (state.buildings.bioDome ? 1.45 : 1.0) *
+    (state.unlockedTechs.includes('tech-hydro') ? 1.35 : 1.0);
+  const nextDomeCrops = stepDomeCrops(state.domeCrops, deltaSeconds, cropSpeed);
+
+  // Realistic Astronaut Nutrition / Hunger decay (slow, never kills abruptly; refills via [H])
+  const hungerDrain = isNearO2Source ? 0.14 : 0.24;
+  const nextHunger = Math.max(5, state.hunger - hungerDrain * deltaSeconds);
 
   // Sol Day cycle (~45 seconds per Martian Sol)
   let nextSol = state.solDay;
@@ -956,13 +1031,15 @@ export function updateColonyTick(
     solAcc -= 45;
   }
 
-  return {
+  let nextState: ColonyState = {
     ...state,
     oxygen: nextO2,
     regolith: nextRegolith,
     waterIce: nextIce,
     water: nextWater,
     biomass: nextBiomass,
+    hunger: nextHunger,
+    domeCrops: nextDomeCrops,
     solDay: nextSol,
     waterGenAccumulator: waterAcc,
     minerGenAccumulator: minerAcc,
@@ -971,6 +1048,109 @@ export function updateColonyTick(
     habitability: computeHabitability(state),
     stage: computeStage(state),
     isNearO2Source: isNearO2Source || state.buildings.terraformer,
+  };
+
+  if (nextState.buildings.habitat) {
+    const solSync = syncMissionControlSol(
+      nextState.missionControl,
+      nextSol,
+      nextState.threatsEnabled
+    );
+    if (solSync.rotated) {
+      nextState = { ...nextState, missionControl: solSync.state };
+    }
+    if (waterGained > 0) {
+      nextState = applyMissionControlProgress(nextState, 'produce-water', waterGained).state;
+    }
+    if (minerRegGained > 0) {
+      nextState = applyMissionControlProgress(nextState, 'gather-regolith', minerRegGained).state;
+    }
+    if (minerIceGained > 0) {
+      nextState = applyMissionControlProgress(nextState, 'gather-ice', minerIceGained).state;
+    }
+    if (bioGained > 0) {
+      nextState = applyMissionControlProgress(nextState, 'produce-biomass', bioGained).state;
+    }
+  }
+
+  return nextState;
+}
+
+export function applyMissionControlReward(
+  state: ColonyState,
+  reward: DailyObjectiveReward
+): ColonyState {
+  if (!hasNonZeroReward(reward)) return state;
+  let nextHealth = state.buildingHealth;
+  if (reward.repairAllPct && reward.repairAllPct > 0) {
+    nextHealth = { ...state.buildingHealth };
+    for (const k of Object.keys(state.buildings) as BuildingKey[]) {
+      if (state.buildings[k]) {
+        nextHealth[k] = Math.min(100, nextHealth[k] + reward.repairAllPct);
+      }
+    }
+  }
+  return {
+    ...state,
+    regolith: state.regolith + (reward.regolith || 0),
+    waterIce: state.waterIce + (reward.waterIce || 0),
+    water: state.water + (reward.water || 0),
+    biomass: state.biomass + (reward.biomass || 0),
+    oxygen: reward.oxygenRefill ? state.oxygenMax : state.oxygen,
+    buildingHealth: nextHealth,
+  };
+}
+
+/**
+ * Advances Habitat Mission Control daily objectives when the Habitat is operational,
+ * automatically granting bonus rewards upon objective completion.
+ */
+export function applyMissionControlProgress(
+  state: ColonyState,
+  kind: DailyObjectiveKind,
+  amount = 1
+): { state: ColonyState; completedDailyTitles: string[] } {
+  if (!state.buildings.habitat || amount <= 0) {
+    return { state, completedDailyTitles: [] };
+  }
+  const prog = progressDailyObjectives(state.missionControl, kind, amount);
+  if (prog.state === state.missionControl) {
+    return { state, completedDailyTitles: [] };
+  }
+  let nextState: ColonyState = {
+    ...state,
+    missionControl: prog.state,
+  };
+  if (prog.newlyCompleted.length > 0) {
+    nextState = applyMissionControlReward(nextState, prog.grantedReward);
+  }
+  return {
+    state: nextState,
+    completedDailyTitles: prog.newlyCompleted.map((o) => `${o.title} (${o.rewardText})`),
+  };
+}
+
+export function rerollColonyMissionControl(
+  state: ColonyState,
+  rng: () => number = Math.random
+): { state: ColonyState; rerolled: boolean; reason?: string } {
+  if (!state.buildings.habitat) {
+    return {
+      state,
+      rerolled: false,
+      reason: 'Construa o Habitat Pressurizado (-11, 12) para ativar o terminal.',
+    };
+  }
+  const res = rerollDailyObjectives(state.missionControl, state.threatsEnabled, rng);
+  if (!res.rerolled) {
+    return { state, rerolled: false, reason: res.reason };
+  }
+  return {
+    state: {
+      ...state,
+      missionControl: res.state,
+    },
+    rerolled: true,
   };
 }
 
@@ -1038,4 +1218,249 @@ export function forceTriggerDustStorm(
     ),
   };
 }
+
+/**
+ * Excavates a real 3D crater at (x, z) and extracts biome-authentic buried Martian minerals.
+ */
+export function excavateCraterAt(
+  state: ColonyState,
+  x: number,
+  z: number,
+  rng: () => number = Math.random
+): { state: ColonyState; crater: ExcavatedCrater | null; summaryText: string; ok: boolean } {
+  // Prevent digging right under the Starship landing pad or existing craters within 2.5m
+  if (Math.hypot(x, z) < 5.0) {
+    return {
+      state,
+      crater: null,
+      summaryText: 'Afaste-se da base de pouso da nave para escavar crateras.',
+      ok: false,
+    };
+  }
+  const tooClose = state.craters.some((c) => Math.hypot(c.x - x, c.z - z) < 3.2);
+  if (tooClose) {
+    return {
+      state,
+      crater: null,
+      summaryText: 'Cratera já escavada neste ponto. Explore uma nova área!',
+      ok: false,
+    };
+  }
+
+  const { biome, yieldData } = computeExcavationYield(x, z, rng);
+  const crater: ExcavatedCrater = {
+    id: `crater-${Date.now()}-${state.craters.length}`,
+    x: Number(x.toFixed(2)),
+    z: Number(z.toFixed(2)),
+    radius: 2.8 + rng() * 0.8,
+    depth: 1.15 + rng() * 0.45,
+    biomeId: biome.id,
+  };
+
+  let next: ColonyState = {
+    ...state,
+    regolith: state.regolith + yieldData.regolith,
+    waterIce: state.waterIce + yieldData.waterIce,
+    iron: state.iron + yieldData.iron,
+    titanium: state.titanium + yieldData.titanium,
+    silicon: state.silicon + yieldData.silicon,
+    sulfur: state.sulfur + yieldData.sulfur,
+    craters: [...state.craters.slice(-24), crater],
+  };
+
+  if (yieldData.regolith > 0) {
+    next = applyMissionControlProgress(next, 'gather-regolith', yieldData.regolith).state;
+  }
+  if (yieldData.waterIce > 0) {
+    next = applyMissionControlProgress(next, 'gather-ice', yieldData.waterIce).state;
+  }
+
+  return {
+    state: next,
+    crater,
+    summaryText: `Escavação (${biome.name}): ${yieldData.summaryText}`,
+    ok: true,
+  };
+}
+
+/**
+ * Plants a food crop inside one of the 4 glass-dome hydroponic beds.
+ */
+export function plantDomeCrop(
+  state: ColonyState,
+  bedIndex: number,
+  cropId: CropTypeId
+): { state: ColonyState; ok: boolean; label: string } {
+  const bed = state.domeCrops[bedIndex];
+  if (!bed) return { state, ok: false, label: 'Canteiro inválido.' };
+  if (bed.cropId) return { state, ok: false, label: 'Canteiro ocupado.' };
+
+  const crop = getCropDef(cropId);
+  if (state.water < crop.waterCost) {
+    return {
+      state,
+      ok: false,
+      label: `Requer ${crop.waterCost} Água para plantar ${crop.name}.`,
+    };
+  }
+
+  const nextBeds = state.domeCrops.map((b) =>
+    b.bedIndex === bedIndex
+      ? {
+          ...b,
+          cropId,
+          elapsedSec: 0,
+          durationSec: crop.growthSec,
+          readyToHarvest: false,
+        }
+      : b
+  );
+
+  return {
+    state: {
+      ...state,
+      water: state.water - crop.waterCost,
+      domeCrops: nextBeds,
+    },
+    ok: true,
+    label: `Plantado na Redoma: ${crop.name} (${crop.growthSec}s)`,
+  };
+}
+
+/**
+ * Harvests a mature food crop from a glass-dome bed.
+ */
+export function harvestDomeCrop(
+  state: ColonyState,
+  bedIndex: number
+): { state: ColonyState; ok: boolean; label: string } {
+  const bed = state.domeCrops[bedIndex];
+  if (!bed || !bed.cropId || !bed.readyToHarvest) {
+    return { state, ok: false, label: 'Cultivo ainda crescendo na redoma.' };
+  }
+  const crop = getCropDef(bed.cropId);
+  const nextBeds = state.domeCrops.map((b) =>
+    b.bedIndex === bedIndex
+      ? {
+          ...b,
+          cropId: null,
+          elapsedSec: 0,
+          durationSec: 12,
+          readyToHarvest: false,
+        }
+      : b
+  );
+
+  let next: ColonyState = {
+    ...state,
+    food: state.food + crop.foodYield,
+    biomass: state.biomass + crop.biomassYield,
+    domeCrops: nextBeds,
+  };
+  next = applyMissionControlProgress(next, 'produce-biomass', crop.biomassYield).state;
+
+  return {
+    state: next,
+    ok: true,
+    label: `Colhido: +${crop.foodYield} Alimentos · +${crop.biomassYield} Biomassa`,
+  };
+}
+
+/**
+ * Astronaut eats 1 food ration from colony stock to restore nutrition (+42%) and suit O2 (+18%).
+ */
+export function consumeFoodRation(
+  state: ColonyState
+): { state: ColonyState; ok: boolean; label: string } {
+  if (state.food <= 0) {
+    return {
+      state,
+      ok: false,
+      label: 'Sem rações! Cultive alimentos na Redoma de Vidro [B].',
+    };
+  }
+  return {
+    state: {
+      ...state,
+      food: state.food - 1,
+      hunger: Math.min(100, state.hunger + 42),
+      oxygen: Math.min(state.oxygenMax, state.oxygen + 18),
+    },
+    ok: true,
+    label: 'Ração consumida: +42% Nutrição · +18% O2',
+  };
+}
+
+export function runColonyRefineryRecipe(
+  state: ColonyState,
+  recipeId: string
+): { state: ColonyState; ok: boolean; label: string } {
+  return executeRefineryRecipe(state, recipeId);
+}
+
+export function craftColonyWeapon(
+  state: ColonyState,
+  weaponId: WeaponId
+): { state: ColonyState; crafted: boolean; label: string } {
+  return craftWeapon(state, weaponId);
+}
+
+export function equipColonyWeapon(
+  state: ColonyState,
+  weaponId: WeaponId
+): { state: ColonyState; equipped: boolean; label: string } {
+  if (!state.craftedWeapons.includes(weaponId)) {
+    return { state, equipped: false, label: 'Armamento ainda não fabricado.' };
+  }
+  const w = getWeaponDef(weaponId);
+  return {
+    state: { ...state, equippedWeapon: weaponId },
+    equipped: true,
+    label: `Equipado: ${w.name}`,
+  };
+}
+
+/**
+ * Scans & collects rewards from a Mars orbital anomaly/landmark discovered with the Starship.
+ */
+export function discoverPlanetarySite(
+  state: ColonyState,
+  siteId: string
+): { state: ColonyState; discovered: boolean; label: string } {
+  const site = PLANETARY_SITES.find((s) => s.id === siteId);
+  if (!site) return { state, discovered: false, label: 'Coordenada orbital inválida.' };
+  if (state.discoveredSites.includes(siteId)) {
+    return { state, discovered: false, label: `${site.name} já foi explorado.` };
+  }
+  if (state.fuel < site.fuelCost) {
+    return {
+      state,
+      discovered: false,
+      label: `Requer ${site.fuelCost} Combustível (H₂) para varredura orbital. Sintetize na Refinaria [B].`,
+    };
+  }
+
+  const r = site.reward;
+  const next: ColonyState = {
+    ...state,
+    fuel: state.fuel - site.fuelCost + (r.fuel || 0),
+    regolith: state.regolith + (r.regolith || 0),
+    waterIce: state.waterIce + (r.waterIce || 0),
+    water: state.water + (r.water || 0),
+    iron: state.iron + (r.iron || 0),
+    titanium: state.titanium + (r.titanium || 0),
+    silicon: state.silicon + (r.silicon || 0),
+    sulfur: state.sulfur + (r.sulfur || 0),
+    food: state.food + (r.food || 0),
+    biomass: state.biomass + (r.biomass || 0),
+    discoveredSites: [...state.discoveredSites, siteId],
+  };
+
+  return {
+    state: next,
+    discovered: true,
+    label: `Descoberta Orbital: ${site.name} (${site.rewardText})`,
+  };
+}
+
 

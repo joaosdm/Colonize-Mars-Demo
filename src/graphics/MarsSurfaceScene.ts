@@ -17,6 +17,7 @@ import {
   createColonyStructures,
   ColonyStructures,
   CollectableResource,
+  ResourceNodeKind,
   PLANTING_PLOT_COORDS,
 } from './colonyStructures';
 import {
@@ -25,6 +26,7 @@ import {
   CONSTRUCTION_CONFIGS,
   canStartConstruction,
 } from '../sim/marsColonyLogic';
+import { ExcavatedCrater, getCropDef } from '../sim/marsWorld';
 import {
   BUILDING_COORDS,
   MarsEnemy,
@@ -42,6 +44,7 @@ import {
   getAstronautRole,
 } from '../sim/astronautRoles';
 import { RemotePlayerState } from '../net/coopProtocol';
+import type { QualityConfig } from '../sim/devicePerformance';
 
 export interface InteractiveTriggerZone {
   id: string;
@@ -61,14 +64,18 @@ export interface InteractiveTriggerZone {
 
 export interface MarsSceneOptions {
   container: HTMLDivElement;
+  qualityConfig?: QualityConfig;
   onCutsceneEnd?: () => void;
   onResourceCollected?: (
     resourceId: string,
-    type: 'regolith' | 'ice',
+    type: ResourceNodeKind,
     worldPos: THREE.Vector3
   ) => void;
   onTriggerCompleted?: (triggerId: string) => void;
   onOpenTechModal?: () => void;
+  onOpenMissionControl?: () => void;
+  onOpenWorkshop?: () => void;
+  onOpenOrbital?: () => void;
   onCanvasShoot?: (dirX: number, dirZ: number) => void;
 }
 
@@ -87,6 +94,7 @@ interface RemoteAvatarEntry {
 
 interface EnemyVisualEntry {
   group: THREE.Group;
+  hpBg: THREE.Mesh;
   hpBarFill: THREE.Mesh;
   bodyMat: THREE.MeshStandardMaterial;
   baseEmissive: number;
@@ -114,6 +122,7 @@ const MARS_SKY_COLOR = new THREE.Color(0xb44a28);
 const STORM_SKY_COLOR = new THREE.Color(0xc25e28);
 const TERRA_SKY_COLOR = new THREE.Color(0x3882c4);
 const TEMP_SKY_COLOR = new THREE.Color();
+const TEMP_CROP_COLOR = new THREE.Color();
 
 export class MarsSurfaceScene {
   public renderer: THREE.WebGLRenderer;
@@ -134,38 +143,55 @@ export class MarsSurfaceScene {
   // Remote Co-op Avatars
   private remoteAvatars: Map<string, RemoteAvatarEntry> = new Map();
 
-  // Combat Visual Pools
+  // Combat Visual Pools & Zero-GC Scratch Collections
   private enemyMeshes: Map<string, EnemyVisualEntry> = new Map();
   private boltMeshes: Map<string, THREE.Mesh> = new Map();
+  private boltColorMats: Map<string, THREE.MeshBasicMaterial> = new Map();
+  private activeEnemyIds: Set<string> = new Set();
+  private activeBoltIds: Set<string> = new Set();
+  private lastDomeCropIds: Array<string | null> = [null, null, null, null];
   private turretLaserLine: THREE.Line;
   private turretLaserTimer: number = 0;
   private playerBoltGeo = new THREE.SphereGeometry(0.22, 8, 8);
+  private railgunBoltGeo = new THREE.BoxGeometry(0.18, 0.18, 1.45);
   private playerBoltMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
   private turretBoltMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
+  private enemyBoltMat = new THREE.MeshBasicMaterial({ color: 0xa3e635 });
+  private envMapTexture: THREE.Texture | null = null;
+  private dustScaleFactor: number = 1.0;
+
+  // Active craters synced from ColonyState
+  private activeCraters: ExcavatedCrater[] = [];
+  private lastCraterCount: number = 0;
 
   // Cutscene State
   public isCutscene: boolean = false;
   private cutsceneTime: number = 0;
   private cutsceneDuration: number = 4.6;
 
-  // Camera Orbit State & Click Aiming
+  // Camera Orbit State, Multi-Touch Pinch Zoom & Click Aiming
   public cameraYaw: number = 0;
   public cameraPitch: number = 0.46;
   public cameraDistance: number = 9.0;
   private cameraLookTarget = new THREE.Vector3();
   private cameraDesiredPos = new THREE.Vector3();
   private isDraggingCamera: boolean = false;
+  private activeCameraPointerId: number | null = null;
+  private activeTouchPointers: Map<number, { x: number; y: number }> = new Map();
+  private lastPinchDistance: number | null = null;
   private lastPointerX: number = 0;
   private lastPointerY: number = 0;
   private pointerMoveDist: number = 0;
   private pointerButton: number = -1;
   private raycaster = new THREE.Raycaster();
+  private tempNdcVec2 = new THREE.Vector2();
+  private tempHitVec3 = new THREE.Vector3();
   private aimGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
   // Particle systems (dust & jetpack exhaust)
   private dustPoints: THREE.Points;
   private dustPositions: Float32Array;
-  private maxDust = 280;
+  private maxDust = 260;
   private dustIndex = 0;
   private stormBlend = 0;
 
@@ -179,11 +205,14 @@ export class MarsSurfaceScene {
   private onCutsceneEnd?: () => void;
   private onResourceCollected?: (
     resourceId: string,
-    type: 'regolith' | 'ice',
+    type: ResourceNodeKind,
     worldPos: THREE.Vector3
   ) => void;
   private onTriggerCompleted?: (triggerId: string) => void;
   private onOpenTechModal?: () => void;
+  private onOpenMissionControl?: () => void;
+  private onOpenWorkshop?: () => void;
+  private onOpenOrbital?: () => void;
   private onCanvasShoot?: (dirX: number, dirZ: number) => void;
 
   private frameId: number = 0;
@@ -196,6 +225,9 @@ export class MarsSurfaceScene {
     this.onResourceCollected = options.onResourceCollected;
     this.onTriggerCompleted = options.onTriggerCompleted;
     this.onOpenTechModal = options.onOpenTechModal;
+    this.onOpenMissionControl = options.onOpenMissionControl;
+    this.onOpenWorkshop = options.onOpenWorkshop;
+    this.onOpenOrbital = options.onOpenOrbital;
     this.onCanvasShoot = options.onCanvasShoot;
     (window as unknown as { __marsScene: MarsSurfaceScene }).__marsScene = this;
 
@@ -214,19 +246,27 @@ export class MarsSurfaceScene {
       }
     })();
 
+    const quality = options.qualityConfig;
+    this.maxDust = quality ? quality.maxDustParticles : this.isSoftwareGl ? 96 : 240;
+
     // 2. Renderer
     const width = this.container.clientWidth || window.innerWidth;
     const height = this.container.clientHeight || window.innerHeight;
+    const initialPixelRatio = this.isSoftwareGl
+      ? 0.75
+      : Math.min(window.devicePixelRatio || 1, quality?.pixelRatioCap ?? 1.75);
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: !this.isSoftwareGl,
+      antialias: quality ? quality.antialias && !this.isSoftwareGl : !this.isSoftwareGl,
       powerPreference: 'high-performance',
+      stencil: false,
     });
     this.renderer.setSize(width, height);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.12;
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 0.75 : Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(initialPixelRatio);
+    this.renderer.domElement.style.touchAction = 'none';
     this.container.appendChild(this.renderer.domElement);
 
     // 3. Scene & Martian Atmosphere
@@ -234,38 +274,53 @@ export class MarsSurfaceScene {
     this.scene.background = MARS_SKY_COLOR.clone();
     this.scene.fog = new THREE.FogExp2(0xb44a28, 0.0068);
 
-    this.camera = new THREE.PerspectiveCamera(54, width / height, 0.1, 600);
+    const aspect = width / Math.max(1, height);
+    const fov = aspect < 0.85 ? 62 : 54;
+    const farClip = quality?.farClip ?? 460;
+    this.camera = new THREE.PerspectiveCamera(fov, aspect, 0.15, farClip);
     this.camera.position.set(0, 12, 26);
 
-    // 4. Studio Reflection Environment
+    // 4. Studio Reflection Environment (optional on low-end mobile GPUs)
     const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.envMapTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     pmrem.dispose();
+    this.scene.environment = quality?.enableEnvMap === false ? null : this.envMapTexture;
 
     // 5. Lighting
     const marsSun = new THREE.DirectionalLight(0xffecd2, 2.35);
     marsSun.position.set(42, 62, 32);
     this.scene.add(marsSun);
 
-    const hemiLight = new THREE.HemisphereLight(0xf97316, 0x431407, 0.8);
+    const hemiLight = new THREE.HemisphereLight(0xf97316, 0x431407, 0.88);
     this.scene.add(hemiLight);
 
-    // 6. Terrain, Crater Lakes, Rocks & Sprouting Flora
-    const maxAniso = this.isSoftwareGl ? 1 : Math.min(4, this.renderer.capabilities.getMaxAnisotropy());
-    this.terrain = createMarsTerrain(maxAniso);
+    // 6. Terrain, Crater Lakes, Rocks, Sky & Sprouting Flora
+    const maxAniso = this.isSoftwareGl
+      ? 1
+      : Math.min(quality?.maxAnisotropy ?? 4, this.renderer.capabilities.getMaxAnisotropy());
+    this.terrain = createMarsTerrain({
+      maxAnisotropy: maxAniso,
+      segments: quality?.terrainSegments ?? (this.isSoftwareGl ? 72 : 128),
+      textureSize: quality?.terrainTextureSize ?? (this.isSoftwareGl ? 256 : 512),
+      rockCount: quality?.rockCount ?? 120,
+      floraCount: quality?.floraCount ?? 95,
+      enableBumpMap: quality?.enableBumpMap ?? !this.isSoftwareGl,
+    });
     this.scene.add(
       this.terrain.terrainMesh,
       this.terrain.rocksInstanced,
       this.terrain.decorationsGroup,
       this.terrain.lakeEast,
       this.terrain.lakeWest,
-      this.terrain.floraInstanced
+      this.terrain.floraInstanced,
+      this.terrain.skyGroup
     );
 
-    // 7. Colony Structures, Scaffolding & Damage Rings
+    // 7. Colony Structures, Glass Food Greenhouse, Scaffolding & Damage Rings
     this.structures = createColonyStructures();
     this.scene.add(
       this.structures.landerGroup,
+      this.structures.miniGreenhouseGroup,
       this.structures.moxieSlotRing,
       this.structures.moxieGroup,
       this.structures.moxieAuraDome,
@@ -341,17 +396,69 @@ export class MarsSurfaceScene {
     this.dustPoints = new THREE.Points(dGeo, dMat);
     this.scene.add(this.dustPoints);
 
-    // 10. Pointer drag camera orbit, quick-click shoot & resize listeners
+    // 10. Pointer/Touch drag camera orbit, pinch-to-zoom, quick-click shoot & resize listeners
     const dom = this.renderer.domElement;
     dom.addEventListener('pointerdown', this.onPointerDown);
     window.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerup', this.onPointerUp);
+    window.addEventListener('pointercancel', this.onPointerUp);
     dom.addEventListener('wheel', this.onWheel, { passive: true });
     window.addEventListener('resize', this.onResize);
   }
 
+  /**
+   * Dynamically updates rendering quality at runtime without tearing down the WebGL context.
+   */
+  public applyQualityConfig(config: QualityConfig) {
+    if (this.isDisposed) return;
+    const dpr = this.isSoftwareGl
+      ? 0.75
+      : Math.min(window.devicePixelRatio || 1, config.pixelRatioCap);
+    this.renderer.setPixelRatio(dpr);
+    this.camera.far = config.farClip;
+    this.camera.updateProjectionMatrix();
+    this.terrain.setBumpEnabled(config.enableBumpMap);
+    this.scene.environment = config.enableEnvMap ? this.envMapTexture : null;
+    this.dustScaleFactor = config.tier === 'low' ? 0.45 : config.tier === 'medium' ? 0.75 : 1.0;
+  }
+
+  /**
+   * Adjusts dynamic WebGL resolution during runtime (used by AdaptivePerformanceMonitor).
+   */
+  public setDynamicPixelRatio(dpr: number) {
+    if (this.isDisposed || this.isSoftwareGl) return;
+    const clamped = Math.max(0.65, Math.min(window.devicePixelRatio || 1, dpr));
+    if (Math.abs(this.renderer.getPixelRatio() - clamped) >= 0.04) {
+      this.renderer.setPixelRatio(clamped);
+    }
+  }
+
   private onPointerDown = (e: PointerEvent) => {
+    // Only bind pointers that begin directly on the 3D canvas (never steal TouchControls touches)
+    if (e.target !== this.renderer.domElement) return;
+
+    if (e.pointerType === 'touch') {
+      this.activeTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.activeTouchPointers.size === 2) {
+        const pts = Array.from(this.activeTouchPointers.values());
+        this.lastPinchDistance = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        this.isDraggingCamera = false;
+        this.activeCameraPointerId = null;
+        return;
+      }
+      if (this.activeCameraPointerId === null) {
+        this.activeCameraPointerId = e.pointerId;
+        this.isDraggingCamera = true;
+        this.pointerButton = 0;
+        this.pointerMoveDist = 0;
+        this.lastPointerX = e.clientX;
+        this.lastPointerY = e.clientY;
+      }
+      return;
+    }
+
     if (e.button === 0 || e.button === 2) {
+      this.activeCameraPointerId = e.pointerId;
       this.isDraggingCamera = true;
       this.pointerButton = e.button;
       this.pointerMoveDist = 0;
@@ -361,21 +468,48 @@ export class MarsSurfaceScene {
   };
 
   private onPointerMove = (e: PointerEvent) => {
-    if (!this.isDraggingCamera) return;
+    if (e.pointerType === 'touch' && this.activeTouchPointers.has(e.pointerId)) {
+      this.activeTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.activeTouchPointers.size === 2) {
+        const pts = Array.from(this.activeTouchPointers.values());
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        if (this.lastPinchDistance !== null) {
+          const delta = this.lastPinchDistance - dist;
+          this.cameraDistance = Math.max(5.5, Math.min(17.5, this.cameraDistance + delta * 0.025));
+        }
+        this.lastPinchDistance = dist;
+        return;
+      }
+    }
+
+    if (!this.isDraggingCamera || e.pointerId !== this.activeCameraPointerId) return;
     const dx = e.clientX - this.lastPointerX;
     const dy = e.clientY - this.lastPointerY;
     this.pointerMoveDist += Math.hypot(dx, dy);
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
 
-    this.cameraYaw -= dx * 0.0055;
-    this.cameraPitch = Math.max(0.2, Math.min(1.05, this.cameraPitch + dy * 0.004));
+    const sensX = e.pointerType === 'touch' ? 0.0068 : 0.0055;
+    const sensY = e.pointerType === 'touch' ? 0.0048 : 0.004;
+    this.cameraYaw -= dx * sensX;
+    this.cameraPitch = Math.max(0.2, Math.min(1.05, this.cameraPitch + dy * sensY));
   };
 
   private onPointerUp = (e: PointerEvent) => {
+    if (e.pointerType === 'touch') {
+      this.activeTouchPointers.delete(e.pointerId);
+      if (this.activeTouchPointers.size < 2) {
+        this.lastPinchDistance = null;
+      }
+    }
+
+    if (e.pointerId !== this.activeCameraPointerId) return;
+
+    // On desktop mouse: quick left-click shoots toward cursor; on touch: dedicated PULSO button fires, tap-to-shoot only if very deliberate short tap on canvas
     if (
       this.isDraggingCamera &&
       this.pointerButton === 0 &&
+      e.pointerType !== 'touch' &&
       this.pointerMoveDist < 6 &&
       !this.isCutscene &&
       e.target === this.renderer.domElement
@@ -384,6 +518,7 @@ export class MarsSurfaceScene {
       this.onCanvasShoot?.(aim.dirX, aim.dirZ);
     }
     this.isDraggingCamera = false;
+    this.activeCameraPointerId = null;
     this.pointerButton = -1;
   };
 
@@ -395,24 +530,27 @@ export class MarsSurfaceScene {
     if (!this.container || this.isDisposed) return;
     const width = this.container.clientWidth || window.innerWidth;
     const height = this.container.clientHeight || window.innerHeight;
-    this.camera.aspect = width / height;
+    const aspect = width / Math.max(1, height);
+    this.camera.aspect = aspect;
+    this.camera.fov = aspect < 0.85 ? 62 : 54;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
   };
 
   /**
-   * Computes ground-plane aim direction from a screen click relative to astronaut
+   * Computes ground-plane aim direction from a screen click relative to astronaut (zero allocations)
    */
   public getAimDirectionFromClient(clientX: number, clientY: number): { dirX: number; dirZ: number } {
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const ndcX = ((clientX - rect.left) / (rect.width || 1)) * 2 - 1;
-    const ndcY = -((clientY - rect.top) / (rect.height || 1)) * 2 + 1;
-    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
+    this.tempNdcVec2.set(
+      ((clientX - rect.left) / (rect.width || 1)) * 2 - 1,
+      -((clientY - rect.top) / (rect.height || 1)) * 2 + 1
+    );
+    this.raycaster.setFromCamera(this.tempNdcVec2, this.camera);
     this.aimGroundPlane.constant = -(this.playerPos.y + 0.9);
-    const hit = new THREE.Vector3();
-    if (this.raycaster.ray.intersectPlane(this.aimGroundPlane, hit)) {
-      const dx = hit.x - this.playerPos.x;
-      const dz = hit.z - this.playerPos.z;
+    if (this.raycaster.ray.intersectPlane(this.aimGroundPlane, this.tempHitVec3)) {
+      const dx = this.tempHitVec3.x - this.playerPos.x;
+      const dz = this.tempHitVec3.z - this.playerPos.z;
       const len = Math.hypot(dx, dz);
       if (len > 0.2) {
         return { dirX: dx / len, dirZ: dz / len };
@@ -616,6 +754,7 @@ export class MarsSurfaceScene {
     const baseSpeedMult = (hasJetpackMk2 ? 1.18 : 1.0) * roleMods.moveSpeedMultiplier;
     const jetpackCapMult = (hasJetpackMk2 ? 1.45 : 1.0) * roleMods.jetpackCapacityMultiplier;
 
+    this.activeCraters = colonyState.craters || [];
     let jumpedAny = false;
     let landedAny = false;
     let remDt = dt;
@@ -637,7 +776,8 @@ export class MarsSurfaceScene {
         {
           speedMultiplier: isSprinting ? baseSpeedMult * 1.32 : baseSpeedMult,
           jetpackCapacityMultiplier: jetpackCapMult,
-        }
+        },
+        this.activeCraters
       );
       firstJump = false;
       if (subRes.jumped) jumpedAny = true;
@@ -671,7 +811,7 @@ export class MarsSurfaceScene {
 
     const speedHoriz = Math.hypot(this.physicsBody.vx, this.physicsBody.vz);
     const isMoving = forceMoving !== undefined ? forceMoving : speedHoriz > 0.35;
-    const groundY = groundHeightAt(this.physicsBody.x, this.physicsBody.z);
+    const groundY = groundHeightAt(this.physicsBody.x, this.physicsBody.z, this.activeCraters);
 
     this.astronaut.updateAnimation({
       isMoving,
@@ -691,7 +831,7 @@ export class MarsSurfaceScene {
     const targetX = this.playerPos.x + Math.sin(this.cameraYaw) * horizDist;
     const targetZ = this.playerPos.z + Math.cos(this.cameraYaw) * horizDist;
     const targetY = Math.max(
-      groundHeightAt(targetX, targetZ) + 1.4,
+      groundHeightAt(targetX, targetZ, this.activeCraters) + 1.4,
       this.playerPos.y + height
     );
 
@@ -805,57 +945,114 @@ export class MarsSurfaceScene {
   }
 
   /**
-   * Creates composite 3D mesh for Martian threat archetypes
+   * Creates composite 3D mesh for all 4 upgraded Martian threat archetypes
    */
   private buildEnemyVisual(enemy: MarsEnemy): EnemyVisualEntry {
     const group = new THREE.Group();
     const isBrute = enemy.kind === 'brute';
     const isDrone = enemy.kind === 'drone';
+    const isStalker = enemy.kind === 'stalker';
 
-    const bodyColor = isBrute ? 0x451a03 : isDrone ? 0x1e293b : 0x7f1d1d;
-    const baseEmissive = isBrute ? 0xea580c : isDrone ? 0xef4444 : 0xdc2626;
+    const bodyColor = isBrute
+      ? 0x451a03
+      : isDrone
+      ? 0x1e293b
+      : isStalker
+      ? 0x14532d
+      : 0x7f1d1d;
+    const baseEmissive = isBrute
+      ? 0xea580c
+      : isDrone
+      ? 0xef4444
+      : isStalker
+      ? 0x84cc16
+      : 0xdc2626;
 
     const bodyMat = new THREE.MeshStandardMaterial({
       color: bodyColor,
       emissive: baseEmissive,
       emissiveIntensity: 0.45,
-      metalness: isDrone ? 0.8 : 0.35,
-      roughness: isDrone ? 0.25 : 0.65,
+      metalness: isDrone ? 0.85 : isStalker ? 0.48 : 0.35,
+      roughness: isDrone ? 0.22 : isStalker ? 0.42 : 0.65,
     });
 
     if (isDrone) {
-      const hull = new THREE.Mesh(new THREE.OctahedronGeometry(0.62, 1), bodyMat);
-      hull.scale.set(1.2, 0.72, 1.2);
+      const hull = new THREE.Mesh(new THREE.OctahedronGeometry(0.65, 1), bodyMat);
+      hull.scale.set(1.25, 0.7, 1.25);
       hull.position.y = 0.2;
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.88, 0.06, 8, 20),
+        new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.9, roughness: 0.2 })
+      );
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = 0.2;
       const eye = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, 8, 8),
+        new THREE.SphereGeometry(0.24, 8, 8),
         new THREE.MeshBasicMaterial({ color: 0xff2222 })
       );
-      eye.position.set(0, 0.2, 0.56);
-      const wingL = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.08, 0.28), bodyMat);
-      wingL.position.set(-0.75, 0.28, 0);
+      eye.position.set(0, 0.2, 0.58);
+      const wingL = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 0.32), bodyMat);
+      wingL.position.set(-0.82, 0.28, 0);
       const wingR = wingL.clone();
-      wingR.position.x = 0.75;
-      group.add(hull, eye, wingL, wingR);
+      wingR.position.x = 0.82;
+      group.add(hull, ring, eye, wingL, wingR);
     } else if (isBrute) {
-      const torso = new THREE.Mesh(new THREE.DodecahedronGeometry(1.05, 0), bodyMat);
-      torso.position.y = 1.35;
+      const torso = new THREE.Mesh(new THREE.DodecahedronGeometry(1.08, 0), bodyMat);
+      torso.position.y = 1.38;
+      const shoulderL = new THREE.Mesh(new THREE.DodecahedronGeometry(0.52, 0), bodyMat);
+      shoulderL.position.set(-0.98, 1.75, 0.1);
+      const shoulderR = shoulderL.clone();
+      shoulderR.position.x = 0.98;
       const core = new THREE.Mesh(
         new THREE.SphereGeometry(0.42, 8, 8),
         new THREE.MeshBasicMaterial({ color: 0xf97316 })
       );
-      core.position.set(0, 1.35, 0.78);
+      core.position.set(0, 1.38, 0.8);
       const legMat = new THREE.MeshStandardMaterial({ color: 0x292524, roughness: 0.8 });
-      const legL = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.9, 0.5), legMat);
-      legL.position.set(-0.52, 0.45, 0);
+      const legL = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.92, 0.54), legMat);
+      legL.position.set(-0.54, 0.46, 0);
       const legR = legL.clone();
-      legR.position.x = 0.52;
-      group.add(torso, core, legL, legR);
+      legR.position.x = 0.54;
+      group.add(torso, shoulderL, shoulderR, core, legL, legR);
+    } else if (isStalker) {
+      // Acid Stalker: predatory Martian mantis-stalker with glowing bio-sac & 4 articulated blades
+      const thorax = new THREE.Mesh(new THREE.ConeGeometry(0.48, 1.25, 7), bodyMat);
+      thorax.rotation.x = Math.PI / 2.2;
+      thorax.position.set(0, 0.9, 0.15);
+      const acidSac = new THREE.Mesh(
+        new THREE.SphereGeometry(0.36, 10, 8),
+        new THREE.MeshBasicMaterial({ color: 0xa3e635 })
+      );
+      acidSac.position.set(0, 0.95, -0.58);
+      const head = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.52, 6), bodyMat);
+      head.rotation.x = Math.PI / 2;
+      head.position.set(0, 1.15, 0.78);
+      const eyeL = new THREE.Mesh(
+        new THREE.SphereGeometry(0.08, 6, 6),
+        new THREE.MeshBasicMaterial({ color: 0xd9f99d })
+      );
+      eyeL.position.set(-0.14, 1.22, 0.92);
+      const eyeR = eyeL.clone();
+      eyeR.position.x = 0.14;
+      group.add(thorax, acidSac, head, eyeL, eyeR);
+      for (let i = 0; i < 4; i++) {
+        const side = i % 2 === 0 ? -1 : 1;
+        const zOff = i < 2 ? 0.25 : -0.25;
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.05, 0.14), bodyMat);
+        leg.position.set(side * 0.56, 0.5, zOff);
+        leg.rotation.z = side * 0.32;
+        group.add(leg);
+      }
     } else {
-      // Silica Crawler
-      const shell = new THREE.Mesh(new THREE.SphereGeometry(0.55, 10, 8), bodyMat);
-      shell.scale.set(1.15, 0.65, 1.35);
+      // Upgraded Silica Crawler with dorsal crystal spines
+      const shell = new THREE.Mesh(new THREE.SphereGeometry(0.56, 10, 8), bodyMat);
+      shell.scale.set(1.18, 0.65, 1.38);
       shell.position.y = 0.48;
+      const spine = new THREE.Mesh(
+        new THREE.ConeGeometry(0.22, 0.58, 5),
+        new THREE.MeshStandardMaterial({ color: 0xf97316, emissive: 0xea580c, emissiveIntensity: 0.6 })
+      );
+      spine.position.set(0, 0.88, -0.1);
       const eyeL = new THREE.Mesh(
         new THREE.SphereGeometry(0.11, 6, 6),
         new THREE.MeshBasicMaterial({ color: 0xfef08a })
@@ -863,11 +1060,13 @@ export class MarsSurfaceScene {
       eyeL.position.set(-0.2, 0.55, 0.65);
       const eyeR = eyeL.clone();
       eyeR.position.x = 0.2;
-      group.add(shell, eyeL, eyeR);
-      for (let i = 0; i < 4; i++) {
-        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.14, 0.14), bodyMat);
-        leg.position.set(i % 2 === 0 ? -0.58 : 0.58, 0.28, i < 2 ? 0.25 : -0.25);
-        leg.rotation.z = i % 2 === 0 ? 0.35 : -0.35;
+      group.add(shell, spine, eyeL, eyeR);
+      for (let i = 0; i < 6; i++) {
+        const side = i % 2 === 0 ? -1 : 1;
+        const zRow = i < 2 ? 0.36 : i < 4 ? 0 : -0.36;
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.13, 0.13), bodyMat);
+        leg.position.set(side * 0.58, 0.28, zRow);
+        leg.rotation.z = side * -0.35;
         group.add(leg);
       }
     }
@@ -877,19 +1076,33 @@ export class MarsSurfaceScene {
       new THREE.PlaneGeometry(1.3, 0.14),
       new THREE.MeshBasicMaterial({ color: 0x0f172a, side: THREE.DoubleSide })
     );
-    hpBg.position.y = isBrute ? 2.75 : isDrone ? 1.2 : 1.35;
+    hpBg.position.y = isBrute ? 2.85 : isStalker ? 1.85 : isDrone ? 1.25 : 1.45;
     const hpFill = new THREE.Mesh(
       new THREE.PlaneGeometry(1.22, 0.09),
-      new THREE.MeshBasicMaterial({ color: 0xef4444, side: THREE.DoubleSide })
+      new THREE.MeshBasicMaterial({ color: isStalker ? 0x84cc16 : 0xef4444, side: THREE.DoubleSide })
     );
     hpFill.position.set(0, hpBg.position.y, 0.01);
     group.add(hpBg, hpFill);
 
-    return { group, hpBarFill: hpFill, bodyMat, baseEmissive, kind: enemy.kind };
+    return { group, hpBg, hpBarFill: hpFill, bodyMat, baseEmissive, kind: enemy.kind };
+  }
+
+  private getBoltMaterial(bolt: PlasmaBolt): THREE.MeshBasicMaterial {
+    if (bolt.fromEnemy) return this.enemyBoltMat;
+    if (bolt.fromTurret) return this.turretBoltMat;
+    if (bolt.colorHex) {
+      let cached = this.boltColorMats.get(bolt.colorHex);
+      if (!cached) {
+        cached = new THREE.MeshBasicMaterial({ color: new THREE.Color(bolt.colorHex) });
+        this.boltColorMats.set(bolt.colorHex, cached);
+      }
+      return cached;
+    }
+    return this.playerBoltMat;
   }
 
   /**
-   * Syncs 3D Enemies, Plasma Bolts, and Turret Laser Beam
+   * Syncs 3D Enemies, Weapon Projectiles, Enemy Acid Bolts, and Turret Laser Beam (zero per-frame Set allocations)
    */
   public syncCombatEntities(
     enemies: MarsEnemy[],
@@ -899,47 +1112,56 @@ export class MarsSurfaceScene {
     totalTime: number
   ) {
     // 1. Enemies
-    const activeEnemyIds = new Set<string>();
-    for (const enemy of enemies) {
-      activeEnemyIds.add(enemy.id);
+    this.activeEnemyIds.clear();
+    for (let i = 0; i < enemies.length; i++) {
+      const enemy = enemies[i];
+      this.activeEnemyIds.add(enemy.id);
       let entry = this.enemyMeshes.get(enemy.id);
       if (!entry) {
         entry = this.buildEnemyVisual(enemy);
         this.scene.add(entry.group);
         this.enemyMeshes.set(enemy.id, entry);
       }
-      const bob = enemy.kind === 'drone' ? Math.sin(totalTime * 5 + enemy.x) * 0.22 : 0;
+      const bob =
+        enemy.kind === 'drone'
+          ? Math.sin(totalTime * 5 + enemy.x) * 0.22
+          : enemy.kind === 'stalker'
+          ? Math.abs(Math.sin(totalTime * 9 + enemy.z)) * 0.14
+          : Math.abs(Math.sin(totalTime * 7 + enemy.x)) * 0.06;
       entry.group.position.set(enemy.x, enemy.y + bob, enemy.z);
       entry.group.rotation.y = enemy.yaw;
 
       const hpRatio = Math.max(0.02, enemy.hp / enemy.maxHp);
       entry.hpBarFill.scale.x = hpRatio;
       entry.hpBarFill.position.x = -(1 - hpRatio) * 0.61;
-      // Keep HP bar facing camera roughly
-      entry.hpBarFill.parent?.children.slice(-2).forEach((child) => {
-        child.rotation.y = this.cameraYaw - enemy.yaw;
-      });
+      const billboardYaw = this.cameraYaw - enemy.yaw;
+      entry.hpBg.rotation.y = billboardYaw;
+      entry.hpBarFill.rotation.y = billboardYaw;
 
       entry.bodyMat.emissiveIntensity = enemy.hitFlashTimer > 0 ? 1.9 : 0.45;
     }
 
     for (const [id, entry] of this.enemyMeshes.entries()) {
-      if (!activeEnemyIds.has(id)) {
+      if (!this.activeEnemyIds.has(id)) {
         this.scene.remove(entry.group);
+        entry.bodyMat.dispose();
         this.enemyMeshes.delete(id);
       }
     }
 
-    // 2. Plasma Bolts
-    const activeBoltIds = new Set<string>();
-    for (const bolt of bolts) {
-      activeBoltIds.add(bolt.id);
+    // 2. Weapon & Enemy Projectiles
+    this.activeBoltIds.clear();
+    for (let i = 0; i < bolts.length; i++) {
+      const bolt = bolts[i];
+      this.activeBoltIds.add(bolt.id);
       let mesh = this.boltMeshes.get(bolt.id);
       if (!mesh) {
-        mesh = new THREE.Mesh(
-          this.playerBoltGeo,
-          bolt.fromTurret ? this.turretBoltMat : this.playerBoltMat
-        );
+        const geo =
+          bolt.weaponId === 'titanium-railgun' ? this.railgunBoltGeo : this.playerBoltGeo;
+        mesh = new THREE.Mesh(geo, this.getBoltMaterial(bolt));
+        if (bolt.weaponId === 'titanium-railgun') {
+          mesh.rotation.y = Math.atan2(bolt.vx, bolt.vz);
+        }
         this.scene.add(mesh);
         this.boltMeshes.set(bolt.id, mesh);
       }
@@ -947,7 +1169,7 @@ export class MarsSurfaceScene {
     }
 
     for (const [id, mesh] of this.boltMeshes.entries()) {
-      if (!activeBoltIds.has(id)) {
+      if (!this.activeBoltIds.has(id)) {
         this.scene.remove(mesh);
         this.boltMeshes.delete(id);
       }
@@ -1054,6 +1276,12 @@ export class MarsSurfaceScene {
             this.triggerTimer = 0;
             if (activeZone.id === 'trigger-open-tech') {
               this.onOpenTechModal?.();
+            } else if (activeZone.id === 'trigger-open-mission-control') {
+              this.onOpenMissionControl?.();
+            } else if (activeZone.id === 'trigger-open-workshop') {
+              this.onOpenWorkshop?.();
+            } else if (activeZone.id === 'trigger-open-orbit') {
+              this.onOpenOrbital?.();
             } else {
               this.onTriggerCompleted?.(activeZone.id);
             }
@@ -1207,6 +1435,48 @@ export class MarsSurfaceScene {
         isInfoOnly: true,
         progressRatio: 0,
         worldPos: new THREE.Vector3(-12, groundHeightAt(-12, -6) + 3.2, -6),
+      };
+    }
+
+    // 3. Built Habitat Mission Control Terminal [C]
+    if (state.buildings.habitat && Math.hypot(p.x + 11, p.z - 12) < 4.5) {
+      return {
+        id: 'trigger-open-mission-control',
+        name: 'Mission Control Terminal',
+        actionText: 'Objetivos Diários do Habitat [C]',
+        requirementText: 'Pressione [C] ou [E] para abrir 3 Objetivos Diários e Bônus',
+        hasRequirements: true,
+        isInfoOnly: true,
+        progressRatio: 0,
+        worldPos: new THREE.Vector3(-11, groundHeightAt(-11, 12, this.activeCraters) + 3.4, 12),
+      };
+    }
+
+    // 4. Glass Food Greenhouse & Chemical Refinery / Weapons Workshop [B]
+    if (Math.hypot(p.x + 6.5, p.z + 5.5) < 4.6) {
+      return {
+        id: 'trigger-open-workshop',
+        name: 'Redoma de Vidro & Refinaria',
+        actionText: 'Abrir Redoma Agrícola, Refinaria & Arsenal [B]',
+        requirementText: 'Pressione [B] ou [E] para plantar alimentos, extrair elementos e criar armas',
+        hasRequirements: true,
+        isInfoOnly: true,
+        progressRatio: 0,
+        worldPos: new THREE.Vector3(-6.5, groundHeightAt(-6.5, -5.5, this.activeCraters) + 3.5, -5.5),
+      };
+    }
+
+    // 5. Starship Lander Orbital Flight Mode [V]
+    if (Math.hypot(p.x, p.z) < 4.8) {
+      return {
+        id: 'trigger-open-orbit',
+        name: 'Nave Starship · Exploração Planetária',
+        actionText: 'Decolar para Órbita de Marte [V]',
+        requirementText: 'Pressione [V] ou [E] para voar ao redor de Marte e escanear anomalias',
+        hasRequirements: true,
+        isInfoOnly: true,
+        progressRatio: 0,
+        worldPos: new THREE.Vector3(0, groundHeightAt(0, 0, this.activeCraters) + 4.4, 0),
       };
     }
 
@@ -1431,10 +1701,17 @@ export class MarsSurfaceScene {
       this.structures.terraformerTurbine.rotation.y = timeSec * 4.5;
     }
 
-    // 13. Holographic Scaffolding Rigs
-    const activeMap = new Map(state.activeConstructions.map((c) => [c.id, c]));
-    Object.entries(this.structures.scaffoldingRigs).forEach(([id, rig]) => {
-      const job = activeMap.get(id);
+    // 13. Holographic Scaffolding Rigs (zero per-frame Map allocation)
+    const activeList = state.activeConstructions;
+    for (const id in this.structures.scaffoldingRigs) {
+      const rig = this.structures.scaffoldingRigs[id];
+      let job = null;
+      for (let j = 0; j < activeList.length; j++) {
+        if (activeList[j].id === id) {
+          job = activeList[j];
+          break;
+        }
+      }
       if (job) {
         rig.group.visible = true;
         const pct = Math.max(0.08, Math.min(1, job.elapsedSec / job.durationSec));
@@ -1443,18 +1720,19 @@ export class MarsSurfaceScene {
       } else {
         rig.group.visible = false;
       }
-    });
+    }
 
     // 14. Building Damage Warning Rings
-    (Object.keys(this.structures.damageRings) as BuildingKey[]).forEach((key) => {
-      const ring = this.structures.damageRings[key];
-      const isDamaged = state.buildings[key] && state.buildingHealth[key] < 100;
+    for (const key in this.structures.damageRings) {
+      const bKey = key as BuildingKey;
+      const ring = this.structures.damageRings[bKey];
+      const isDamaged = state.buildings[bKey] && state.buildingHealth[bKey] < 100;
       ring.visible = isDamaged;
       if (isDamaged) {
         const s = 0.95 + Math.sin(timeSec * 8) * 0.08;
         ring.scale.set(s, s, 1);
       }
-    });
+    }
 
     // 15. Dynamic Planet Sky, Dust Storm Atmosphere, Crater Lakes & Flora Terraforming
     const terraFactor = Math.max(0, Math.min(1, (state.habitability - 50) / 50));
@@ -1480,10 +1758,73 @@ export class MarsSurfaceScene {
       state.buildings.waterExtractor,
       timeSec
     );
+
+    // 16. Apply live 3D excavated craters to terrain mesh whenever count changes
+    const craters = state.craters || [];
+    if (craters.length !== this.lastCraterCount) {
+      this.lastCraterCount = craters.length;
+      this.activeCraters = craters;
+      this.terrain.applyCraters(craters);
+    }
+
+    // 17. Slowly orbit Martian moons (Phobos & Deimos) across the sky
+    this.terrain.skyGroup.rotation.y = timeSec * 0.004;
+
+    // 18. Live 3D Glass-Dome Food Crop Beds (zero per-frame THREE.Color allocations)
+    const domeCrops = state.domeCrops || [];
+    for (let idx = 0; idx < this.structures.domeCropBedGroups.length; idx++) {
+      const plantsHolder = this.structures.domeCropBedGroups[idx];
+      const bed = domeCrops[idx];
+      if (!bed || !bed.cropId) {
+        plantsHolder.visible = false;
+        this.lastDomeCropIds[idx] = null;
+        continue;
+      }
+      plantsHolder.visible = true;
+      const pct = Math.max(0.15, Math.min(1, bed.elapsedSec / Math.max(1, bed.durationSec)));
+      const growthScale = 0.25 + pct * 0.9;
+      plantsHolder.scale.set(0.75 + pct * 0.35, growthScale, 0.75 + pct * 0.35);
+      plantsHolder.rotation.z = bed.readyToHarvest ? Math.sin(timeSec * 3.0 + idx) * 0.04 : 0;
+
+      const cropChanged = this.lastDomeCropIds[idx] !== bed.cropId;
+      if (cropChanged) {
+        this.lastDomeCropIds[idx] = bed.cropId;
+        const cropDef = getCropDef(bed.cropId);
+        TEMP_CROP_COLOR.set(cropDef.colorHex);
+      }
+      const targetEmissive = bed.readyToHarvest ? 0.35 : 0.08;
+      for (let c = 0; c < plantsHolder.children.length; c++) {
+        const child = plantsHolder.children[c];
+        if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
+          if (cropChanged) {
+            child.material.color.copy(TEMP_CROP_COLOR);
+            child.material.emissive.copy(TEMP_CROP_COLOR);
+          }
+          if (child.material.emissiveIntensity !== targetEmissive) {
+            child.material.emissiveIntensity = targetEmissive;
+          }
+        }
+      }
+    }
+  }
+
+  public emitExcavationBurst(x: number, z: number) {
+    const gy = groundHeightAt(x, z, this.activeCraters);
+    const count = Math.max(8, Math.round(22 * this.dustScaleFactor));
+    for (let i = 0; i < count; i++) {
+      const idx = (this.dustIndex % this.maxDust) * 3;
+      this.dustIndex++;
+      const a = Math.random() * Math.PI * 2;
+      const r = 0.4 + Math.random() * 2.8;
+      this.dustPositions[idx] = x + Math.cos(a) * r;
+      this.dustPositions[idx + 1] = gy + 0.3 + Math.random() * 2.1;
+      this.dustPositions[idx + 2] = z + Math.sin(a) * r;
+    }
+    (this.dustPoints.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
   }
 
   private emitStormWindDust(timeSec: number) {
-    const burst = Math.max(2, Math.round(6 * this.stormBlend));
+    const burst = Math.max(1, Math.round(5 * this.stormBlend * this.dustScaleFactor));
     const windDriftX = Math.cos(timeSec * 0.35) * 4.5;
     for (let i = 0; i < burst; i++) {
       const idx = (this.dustIndex % this.maxDust) * 3;
@@ -1496,7 +1837,7 @@ export class MarsSurfaceScene {
   }
 
   private emitFootstepDust(isHighBurst: boolean = false) {
-    const count = isHighBurst ? 7 : 2;
+    const count = Math.max(1, Math.round((isHighBurst ? 6 : 2) * this.dustScaleFactor));
     for (let i = 0; i < count; i++) {
       const idx = (this.dustIndex % this.maxDust) * 3;
       this.dustIndex++;
@@ -1508,7 +1849,8 @@ export class MarsSurfaceScene {
   }
 
   private emitLandingDust() {
-    for (let i = 0; i < 6; i++) {
+    const count = Math.max(2, Math.round(6 * this.dustScaleFactor));
+    for (let i = 0; i < count; i++) {
       const idx = (this.dustIndex % this.maxDust) * 3;
       this.dustIndex++;
       const angle = Math.random() * Math.PI * 2;
@@ -1521,7 +1863,8 @@ export class MarsSurfaceScene {
   }
 
   private emitPickupSparks(pos: THREE.Vector3) {
-    for (let i = 0; i < 5; i++) {
+    const count = Math.max(2, Math.round(5 * this.dustScaleFactor));
+    for (let i = 0; i < count; i++) {
       const idx = (this.dustIndex % this.maxDust) * 3;
       this.dustIndex++;
       this.dustPositions[idx] = pos.x + (Math.random() - 0.5) * 0.6;
@@ -1568,10 +1911,14 @@ export class MarsSurfaceScene {
     dom.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
+    window.removeEventListener('pointercancel', this.onPointerUp);
     dom.removeEventListener('wheel', this.onWheel);
     window.removeEventListener('resize', this.onResize);
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
+    this.envMapTexture?.dispose();
+    this.boltColorMats.forEach((m) => m.dispose());
+    this.enemyMeshes.forEach((e) => e.bodyMat.dispose());
     this.renderer.dispose();
   }
 }

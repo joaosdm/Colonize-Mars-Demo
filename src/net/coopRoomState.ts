@@ -27,6 +27,8 @@ import {
   boostConstruction,
   stepColonyDustStorm,
   progressContract,
+  applyMissionControlProgress,
+  rerollColonyMissionControl,
   updateColonyTick,
 } from '../sim/marsColonyLogic';
 import {
@@ -161,7 +163,7 @@ export function setPlayerRoleInRoom(
 export function applyRoomResourceCollect(
   room: CoopRoom,
   resourceId: string,
-  resourceType: 'regolith' | 'ice'
+  resourceType: 'regolith' | 'ice' | 'iron' | 'titanium' | 'silicon' | 'sulfur'
 ): boolean {
   if (room.collectedResourceIds.has(resourceId)) {
     return false;
@@ -171,8 +173,18 @@ export function applyRoomResourceCollect(
   if (resourceType === 'regolith') {
     room.colonyState = { ...room.colonyState, regolith: room.colonyState.regolith + 1 };
     room.colonyState = progressContract(room.colonyState, 'collect-regolith', 1).state;
-  } else {
+    room.colonyState = applyMissionControlProgress(room.colonyState, 'gather-regolith', 1).state;
+  } else if (resourceType === 'ice') {
     room.colonyState = { ...room.colonyState, waterIce: room.colonyState.waterIce + 1 };
+    room.colonyState = applyMissionControlProgress(room.colonyState, 'gather-ice', 1).state;
+  } else if (resourceType === 'iron') {
+    room.colonyState = { ...room.colonyState, iron: room.colonyState.iron + 1 };
+  } else if (resourceType === 'titanium') {
+    room.colonyState = { ...room.colonyState, titanium: room.colonyState.titanium + 1 };
+  } else if (resourceType === 'silicon') {
+    room.colonyState = { ...room.colonyState, silicon: room.colonyState.silicon + 1 };
+  } else if (resourceType === 'sulfur') {
+    room.colonyState = { ...room.colonyState, sulfur: room.colonyState.sulfur + 1 };
   }
   return true;
 }
@@ -296,6 +308,7 @@ export function applyRoomRepairBuilding(
   };
   if (nextHp >= 100) {
     nextState = progressContract(nextState, 'repair-module', 1).state;
+    nextState = applyMissionControlProgress(nextState, 'repair-modules', 1).state;
   }
   room.colonyState = nextState;
   const coopTag = boostInfo?.label ? ` · ${boostInfo.label}` : '';
@@ -335,6 +348,21 @@ export function applyRoomTechResearch(
   return {
     changed: true,
     label: `Pesquisa Iniciada: ${tech?.name || techId} (${tech?.durationSec || 8}s)`,
+  };
+}
+
+export function applyRoomMissionControlReroll(room: CoopRoom): {
+  changed: boolean;
+  label: string;
+} {
+  const res = rerollColonyMissionControl(room.colonyState);
+  if (!res.rerolled) {
+    return { changed: false, label: res.reason || '' };
+  }
+  room.colonyState = res.state;
+  return {
+    changed: true,
+    label: 'Novos Objetivos Diários gerados no Mission Control Terminal!',
   };
 }
 
@@ -401,19 +429,39 @@ export function tickCoopRoomCombat(room: CoopRoom, nowMs: number): boolean {
     let reg = 0;
     let ice = 0;
     let bio = 0;
+    let iron = 0;
+    let titanium = 0;
+    let sulfur = 0;
     for (const k of step.result.kills) {
       reg += k.regolith;
       ice += k.ice;
       bio += k.biomass;
+      iron += k.iron;
+      titanium += k.titanium;
+      sulfur += k.sulfur;
     }
     room.colonyState = {
       ...room.colonyState,
       regolith: room.colonyState.regolith + reg,
       waterIce: room.colonyState.waterIce + ice,
       biomass: room.colonyState.biomass + bio,
+      iron: room.colonyState.iron + iron,
+      titanium: room.colonyState.titanium + titanium,
+      sulfur: room.colonyState.sulfur + sulfur,
       enemiesDefeated: room.colonyState.enemiesDefeated + step.result.kills.length,
     };
     room.colonyState = progressContract(room.colonyState, 'kill-enemies', step.result.kills.length).state;
+    room.colonyState = applyMissionControlProgress(
+      room.colonyState,
+      'defeat-enemies',
+      step.result.kills.length
+    ).state;
+    if (reg > 0) {
+      room.colonyState = applyMissionControlProgress(room.colonyState, 'gather-regolith', reg).state;
+    }
+    if (ice > 0) {
+      room.colonyState = applyMissionControlProgress(room.colonyState, 'gather-ice', ice).state;
+    }
     stateChanged = true;
   }
 
@@ -491,6 +539,11 @@ export function tickCoopRoom(room: CoopRoom, nowMs: number): {
       };
       if (nextHp >= 100) {
         workingColonyState = progressContract(workingColonyState, 'repair-module', 1).state;
+        workingColonyState = applyMissionControlProgress(
+          workingColonyState,
+          'repair-modules',
+          1
+        ).state;
       }
       repairedDuringTick = true;
     }
