@@ -22,9 +22,14 @@ import {
   FlaskConical,
   Compass,
   Check,
+  Zap,
+  Wifi,
+  WifiOff,
+  Globe2,
 } from 'lucide-react';
 import { RoomSummary } from '../net/coopProtocol';
-import { fetchOpenRooms } from '../net/coopClient';
+import type { PlaygamaMultiplayerStatus } from '../net/playgamaMultiplayerClient';
+import { formatPlaygamaRegionLabel } from '../net/playgamaSync';
 import { soundManager } from '../audio/soundManager';
 import {
   ASTRONAUT_ROLE_LIST,
@@ -37,12 +42,20 @@ interface TitleLobbyOverlayProps {
   threatsEnabled: boolean;
   selectedRole: AstronautRoleId;
   isMobileDetected?: boolean;
+  playgamaStatus: PlaygamaMultiplayerStatus;
   onSelectRole: (roleId: AstronautRoleId) => void;
   onToggleThreatsPref: () => void;
   onToggleMute: () => void;
   onStartSolo: () => void;
-  onCreateCoopRoom: (playerName: string, roleId: AstronautRoleId) => Promise<void>;
+  onQuickMatchCoop: (playerName: string, roleId: AstronautRoleId) => Promise<void>;
+  onCreateCoopRoom: (
+    playerName: string,
+    roleId: AstronautRoleId,
+    isVisible: boolean
+  ) => Promise<void>;
   onJoinCoopRoom: (roomCode: string, playerName: string, roleId: AstronautRoleId) => Promise<void>;
+  onFetchOpenRooms: () => Promise<RoomSummary[]>;
+  onSelectRegion: (regionId: string) => void;
   lobbyError: string | null;
   isConnecting: boolean;
 }
@@ -58,12 +71,16 @@ export const TitleLobbyOverlay: React.FC<TitleLobbyOverlayProps> = ({
   threatsEnabled,
   selectedRole,
   isMobileDetected = false,
+  playgamaStatus,
   onSelectRole,
   onToggleThreatsPref,
   onToggleMute,
   onStartSolo,
+  onQuickMatchCoop,
   onCreateCoopRoom,
   onJoinCoopRoom,
+  onFetchOpenRooms,
+  onSelectRegion,
   lobbyError,
   isConnecting,
 }) => {
@@ -73,17 +90,22 @@ export const TitleLobbyOverlay: React.FC<TitleLobbyOverlayProps> = ({
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
   const loadRooms = useCallback(async () => {
+    if (!playgamaStatus.isSupported) {
+      setOpenRooms([]);
+      return;
+    }
     setIsRefreshing(true);
-    const list = await fetchOpenRooms();
+    const list = await onFetchOpenRooms();
     setOpenRooms(list);
     setIsRefreshing(false);
-  }, []);
+  }, [onFetchOpenRooms, playgamaStatus.isSupported]);
 
   useEffect(() => {
+    if (!playgamaStatus.isSupported) return;
     loadRooms();
-    const timer = window.setInterval(loadRooms, 4000);
+    const timer = window.setInterval(loadRooms, 6000);
     return () => clearInterval(timer);
-  }, [loadRooms]);
+  }, [loadRooms, playgamaStatus.isSupported, playgamaStatus.region]);
 
   const activeRoleDef = getAstronautRole(selectedRole);
 
@@ -301,152 +323,257 @@ export const TitleLobbyOverlay: React.FC<TitleLobbyOverlayProps> = ({
           </div>
         </div>
 
-        {/* Right: 3-Player Cooperative Multiplayer Lobby */}
-        <div className="lg:col-span-5 pointer-events-auto bg-slate-950/90 border border-cyan-500/40 rounded-2xl p-5 sm:p-6 shadow-2xl flex flex-col justify-between space-y-4">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Users className="w-5 h-5 text-cyan-400" />
-                <h2 className="text-sm sm:text-base font-black text-white uppercase tracking-wide">
-                  Lobby Cooperativo (Até 3 Jogadores)
-                </h2>
-              </div>
-              <button
-                type="button"
-                onClick={loadRooms}
-                className="p-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:text-white cursor-pointer"
-                title="Atualizar salas"
-                aria-label="Atualizar salas abertas"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-              </button>
-            </div>
-
-            <div>
-              <label
-                htmlFor="coop-player-name"
-                className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1"
-              >
-                Seu Nome de Astronauta
-              </label>
-              <input
-                id="coop-player-name"
-                type="text"
-                maxLength={16}
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                placeholder="Ex: Comandante Silva"
-                className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm font-medium focus:outline-none focus:border-cyan-400"
-              />
-            </div>
-
-            <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs flex items-center justify-between gap-2">
+        {/* Right: 3-Player Cooperative Multiplayer Lobby (Playgama Bridge) */}
+        <div
+          data-testid="playgama-multiplayer-panel"
+          className="lg:col-span-5 pointer-events-auto bg-slate-950/90 border border-cyan-500/40 rounded-2xl p-5 sm:p-6 shadow-2xl flex flex-col justify-between space-y-4"
+        >
+          <div className="space-y-3.5">
+            <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                {ROLE_ICON[selectedRole]}
-                <div className="truncate">
-                  <span className="text-slate-400">Classe na sala: </span>
-                  <strong className="text-white">{activeRoleDef.name}</strong>
+                <Users className="w-5 h-5 text-cyan-400 shrink-0" />
+                <div className="min-w-0">
+                  <h2 className="text-sm sm:text-base font-black text-white uppercase tracking-wide truncate">
+                    Cooperativo Online (Até 3)
+                  </h2>
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider">
+                    {!playgamaStatus.isInitialized ? (
+                      <span className="text-slate-400">Inicializando Playgama...</span>
+                    ) : playgamaStatus.isSupported ? (
+                      <span className="text-emerald-400 flex items-center gap-1">
+                        <Wifi className="w-3 h-3" />
+                        Playgama Multiplayer Ativo
+                      </span>
+                    ) : (
+                      <span className="text-amber-400 flex items-center gap-1">
+                        <WifiOff className="w-3 h-3" />
+                        Playgama Offline / Indisponível
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
-              <span className="text-[11px] font-mono text-slate-400 shrink-0">
-                {activeRoleDef.shortLabel}
-              </span>
+              {playgamaStatus.isSupported && (
+                <button
+                  type="button"
+                  onClick={loadRooms}
+                  className="p-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:text-white cursor-pointer shrink-0"
+                  title="Atualizar salas Playgama"
+                  aria-label="Atualizar salas abertas"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                </button>
+              )}
             </div>
 
-            <button
-              type="button"
-              disabled={isConnecting}
-              onClick={() => {
-                soundManager.playClick();
-                onCreateCoopRoom(playerName, selectedRole);
-              }}
-              className="w-full py-2.5 px-4 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-60 text-white font-bold rounded-xl cursor-pointer transition-colors flex items-center justify-center gap-2 text-sm whitespace-nowrap"
-            >
-              <Plus className="w-4 h-4" />
-              <span>
-                {isConnecting ? 'Conectando...' : `Criar Sala Co-op (${activeRoleDef.name})`}
-              </span>
-            </button>
-
-            <div className="flex gap-2">
-              <input
-                type="text"
-                maxLength={6}
-                value={roomCodeInput}
-                onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())}
-                placeholder="CÓDIGO (EX: AB12)"
-                aria-label="Código da sala cooperativa"
-                className="flex-1 px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm font-mono uppercase focus:outline-none focus:border-cyan-400"
-              />
-              <button
-                type="button"
-                disabled={isConnecting || !roomCodeInput.trim()}
-                onClick={() => {
-                  soundManager.playClick();
-                  onJoinCoopRoom(roomCodeInput.trim(), playerName, selectedRole);
-                }}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-lg cursor-pointer transition-colors flex items-center gap-1.5 text-sm whitespace-nowrap"
-              >
-                <LogIn className="w-4 h-4" />
-                <span>Entrar</span>
-              </button>
-            </div>
-
-            {lobbyError && (
-              <div className="px-3 py-2 rounded-lg bg-red-950/90 border border-red-500/70 text-red-200 text-xs font-semibold">
-                {lobbyError}
+            {!playgamaStatus.isInitialized ? (
+              <div className="py-8 text-center text-xs text-slate-400 bg-slate-900/70 border border-slate-800 rounded-xl">
+                Conectando ao serviço Playgama Bridge...
               </div>
-            )}
-          </div>
-
-          <div className="space-y-1.5 pt-1">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-              Salas Abertas ({openRooms.length})
-            </div>
-            {openRooms.length === 0 ? (
-              <div className="text-xs text-slate-500 bg-slate-900/70 border border-slate-800 rounded-lg p-3 text-center">
-                Nenhuma sala ativa no momento. Crie uma e coordene Engenheiro, Cientista e Explorador!
+            ) : !playgamaStatus.isSupported ? (
+              <div
+                data-testid="playgama-unsupported-notice"
+                className="space-y-3 bg-slate-900/80 border border-amber-500/40 rounded-xl p-4 text-xs text-slate-300"
+              >
+                <div className="font-bold text-amber-300">
+                  Modo Online indisponível neste ambiente
+                </div>
+                <p className="text-slate-400 leading-relaxed">
+                  O multiplayer cooperativo usa o sistema <strong className="text-white">Playgama Bridge</strong>.
+                  Verifique a conexão de rede ou abra o jogo no portal Playgama. Você pode jogar normalmente no modo <strong className="text-orange-300">Solo</strong>.
+                </p>
               </div>
             ) : (
-              <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                {openRooms.map((room) => (
-                  <div
-                    key={room.code}
-                    className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs gap-2"
-                  >
-                    <div className="min-w-0">
-                      <div className="font-bold text-white flex items-center gap-2">
-                        <span className="font-mono text-cyan-400">{room.code}</span>
-                        <span className="text-slate-400 truncate">· {room.hostName}</span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-1.5 tabular-nums">
-                        <span>Habitabilidade: {Math.round(room.habitability)}%</span>
-                        {room.roles && room.roles.length > 0 && (
-                          <>
-                            <span>·</span>
-                            <span className="text-slate-300">
-                              {room.roles.map((r) => getAstronautRole(r).shortLabel).join(' / ')}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={isConnecting || room.playerCount >= room.maxPlayers}
-                      onClick={() => {
-                        soundManager.playClick();
-                        onJoinCoopRoom(room.code, playerName, selectedRole);
-                      }}
-                      className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white font-bold cursor-pointer whitespace-nowrap shrink-0"
+              <>
+                <div
+                  className={
+                    playgamaStatus.regions.length > 0
+                      ? 'grid grid-cols-1 sm:grid-cols-2 gap-2.5'
+                      : 'block'
+                  }
+                >
+                  <div>
+                    <label
+                      htmlFor="coop-player-name"
+                      className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1"
                     >
-                      {room.playerCount}/{room.maxPlayers} Entrar
-                    </button>
+                      Nome do Astronauta
+                    </label>
+                    <input
+                      id="coop-player-name"
+                      type="text"
+                      maxLength={16}
+                      value={playerName}
+                      onChange={(e) => setPlayerName(e.target.value)}
+                      placeholder="Ex: Comandante Silva"
+                      className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm font-medium focus:outline-none focus:border-cyan-400"
+                    />
                   </div>
-                ))}
-              </div>
+
+                  {playgamaStatus.regions.length > 0 && (
+                    <div>
+                      <label
+                        htmlFor="playgama-region-select"
+                        className="flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1"
+                      >
+                        <Globe2 className="w-3 h-3 text-cyan-400" />
+                        Região do Servidor
+                      </label>
+                      <select
+                        id="playgama-region-select"
+                        data-testid="playgama-region-select"
+                        value={playgamaStatus.region || playgamaStatus.regions[0] || ''}
+                        onChange={(e) => onSelectRegion(e.target.value)}
+                        className="w-full px-2.5 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm font-medium focus:outline-none focus:border-cyan-400 cursor-pointer"
+                      >
+                        {playgamaStatus.regions.map((reg) => (
+                          <option key={reg} value={reg}>
+                            {formatPlaygamaRegionLabel(reg)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2 text-xs flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {ROLE_ICON[selectedRole]}
+                    <div className="truncate">
+                      <span className="text-slate-400">Classe: </span>
+                      <strong className="text-white">{activeRoleDef.name}</strong>
+                    </div>
+                  </div>
+                  <span className="text-[11px] font-mono text-slate-400 shrink-0">
+                    {activeRoleDef.shortLabel}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    data-testid="playgama-quick-match-btn"
+                    disabled={isConnecting}
+                    onClick={() => {
+                      soundManager.playClick();
+                      onQuickMatchCoop(playerName, selectedRole);
+                    }}
+                    className="py-2.5 px-3.5 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-60 text-white font-bold rounded-xl cursor-pointer transition-colors flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
+                  >
+                    <Zap className="w-4 h-4 shrink-0" />
+                    <span>{isConnecting ? 'Conectando...' : 'Partida Rápida'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="playgama-create-room-btn"
+                    disabled={isConnecting}
+                    onClick={() => {
+                      soundManager.playClick();
+                      onCreateCoopRoom(playerName, selectedRole, false);
+                    }}
+                    className="py-2.5 px-3.5 bg-slate-800 hover:bg-slate-700 border border-cyan-500/40 disabled:opacity-60 text-cyan-100 font-bold rounded-xl cursor-pointer transition-colors flex items-center justify-center gap-1.5 text-sm whitespace-nowrap"
+                  >
+                    <Plus className="w-4 h-4 shrink-0" />
+                    <span>Criar Sala Privada</span>
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    maxLength={40}
+                    data-testid="playgama-room-code-input"
+                    value={roomCodeInput}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setRoomCodeInput(val.includes('-') ? val : val.toUpperCase());
+                    }}
+                    placeholder="CÓDIGO PLAYGAMA (EX: K7M4X9TR)"
+                    aria-label="Código da sala Playgama"
+                    className="flex-1 px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white text-sm font-mono focus:outline-none focus:border-cyan-400"
+                  />
+                  <button
+                    type="button"
+                    data-testid="playgama-join-code-btn"
+                    disabled={isConnecting || !roomCodeInput.trim()}
+                    onClick={() => {
+                      soundManager.playClick();
+                      onJoinCoopRoom(roomCodeInput.trim(), playerName, selectedRole);
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-lg cursor-pointer transition-colors flex items-center gap-1.5 text-sm whitespace-nowrap"
+                  >
+                    <LogIn className="w-4 h-4" />
+                    <span>Entrar</span>
+                  </button>
+                </div>
+
+                {lobbyError && (
+                  <div className="px-3 py-2 rounded-lg bg-red-950/90 border border-red-500/70 text-red-200 text-xs font-semibold">
+                    {lobbyError}
+                  </div>
+                )}
+              </>
             )}
           </div>
+
+          {playgamaStatus.isSupported && (
+            <div className="space-y-1.5 pt-1">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                Salas Públicas na Região ({openRooms.length})
+              </div>
+              {openRooms.length === 0 ? (
+                <div className="text-xs text-slate-500 bg-slate-900/70 border border-slate-800 rounded-lg p-3 text-center">
+                  Nenhuma sala pública ativa nesta região. Use <strong>Partida Rápida</strong> para iniciar!
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                  {openRooms.map((room) => (
+                    <div
+                      key={room.code}
+                      className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-bold text-white flex items-center gap-2 min-w-0">
+                          <span
+                            className="font-mono text-cyan-400 shrink-0"
+                            title={room.code}
+                          >
+                            {room.code.length > 10
+                              ? `${room.code.slice(0, 8).toUpperCase()}`
+                              : room.code}
+                          </span>
+                          <span className="text-slate-300 truncate">· {room.hostName}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-1.5 tabular-nums">
+                          <span>Habitabilidade: {Math.round(room.habitability)}%</span>
+                          {room.roles && room.roles.length > 0 && (
+                            <>
+                              <span>·</span>
+                              <span className="text-slate-300">
+                                {room.roles.map((r) => getAstronautRole(r).shortLabel).join(' / ')}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={isConnecting || room.playerCount >= room.maxPlayers}
+                        onClick={() => {
+                          soundManager.playClick();
+                          onJoinCoopRoom(room.code, playerName, selectedRole);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-white font-bold cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        {room.playerCount}/{room.maxPlayers} Entrar
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

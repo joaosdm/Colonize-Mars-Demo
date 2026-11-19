@@ -1,0 +1,1674 @@
+# Multiplayer (beta)
+
+Realtime room multiplayer on Playgama servers. Players meet in a room — by a code, through quick match or from a room list — and exchange messages. One player of the room is the **host**: the game on the host's device decides what happens, the other players send it their actions and repeat what it sends back. The server relays messages and passes the host role to another player when the host leaves or drops.
+
+How to make a match start in seconds when few players are online, with bots in the empty seats: [Multiplayer guide](https://wiki.playgama.com/playgama/guides/game-development/multiplayer.md).
+
+## Implementation order
+
+1. **Required** — Add the SaaS public token to the [config](https://wiki.playgama.com/playgama/bridge-sdk/config.md) (see [Configuration](#configuration)).
+2. **Required** — Check [`isSupported`](#is-supported) before showing online modes.
+3. **Required** — Put the player into a room: [create one](#create-room), [join by code](#join-room) or use [quick match](#join-or-create-room).
+4. **Required** — Subscribe to [players](#players) and [message](#receive-messages) events, and to [room left](#leave-room) to handle a lost connection.
+5. **Recommended** — Let players invite friends with [`inviteToRoom()`](#invite-to-room) and open the room from the invite with [`launchRoomId`](#launch-room-id).
+6. **Optional** — Let the player pick the server [region](#regions) before entering a room.
+7. **Optional** — Let Bridge copy the host's game world to the other players and keep it when the host changes with [`syncState`](#sync-state).
+
+## Configuration
+
+Get the public token from your game's card in the [developer dashboard](https://developer.playgama.com/), under **Bridge SaaS → Multiplayer**, and add it to the `saas` section of the [config](https://wiki.playgama.com/playgama/bridge-sdk/config.md):
+
+{% code title="playgama-bridge-config.json" %}
+
+```json
+{
+  ...
+  "saas": {
+    "publicToken": "<YOUR_APP_PUBLIC_TOKEN>"
+  }
+}
+```
+
+{% endcode %}
+
+Without the token `isSupported` is `false`. The `multiplayer.apiBase` option overrides the server address; leave it out in production builds.
+
+## How it works
+
+* **Rooms.** A room has a code of 8 characters (for example `K7M4X9TR`) that other players type or open from an invite link, a maximum number of players (4 by default), an open/closed flag and a visibility flag. Only visible rooms take part in quick match and the room list; a room created with `createRoom()` is hidden by default — friends join it by code.
+* **Filter and properties.** A room has two sets of flat values (string, number or boolean). The **filter** is the room's matchmaking key, for example `{ mode: 'duel', version: 3 }`: it is set once when the room is created and never changes, and quick match and the room list compare it as a whole, types included (`2` and `'2'` differ, `{ mode: 'duel' }` does not match `{ mode: 'duel', version: 3 }`). The **properties** are the room's data, for example `{ map: 'forest', round: 2 }`: the game changes them at any time and every player sees them, but matchmaking ignores them. A created room also gets its filter values in its properties, so players can read them.
+* **Regions.** Each player is served by one region (Europe, Americas or Asia for now). By default the server picks the best region for the player; optionally the game can let the player choose another one with [`setRegion()`](#regions). Quick match and the room list see only the rooms of the selected region; a room code works from any region.
+* **Host.** The server picks the host: the player who created the room, then — when the host leaves or drops — another player. Keep the authoritative game state on the host and send it to the others, yourself or with [Sync State](#sync-state); check `isHost` after every [host changed](#players) event.
+* **Messages.** A message has a `type` (string) and `data`. Messages from one player arrive in the order they were sent. Players who are reconnecting do not receive messages sent meanwhile.
+* **Reconnects.** When the connection drops, Bridge reconnects by itself and the player keeps the seat for up to 2 minutes; the state is `reconnecting` meanwhile. If reconnecting fails, the player leaves the room with the `connection_lost` reason. A page frozen longer than that (a background tab, a sleeping device) has already lost the seat: on return the player leaves the room with `connection_lost` right away, without reconnecting.
+
+## Is Supported
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.isSupported
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+Bridge.multiplayer.isSupported
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Use the `Is Multiplayer Supported` condition.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Use the `Is Multiplayer Supported` condition.
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+Bridge.mp.is_supported
+```
+
+The module is `Bridge.mp`: every Godot node already has a built-in `multiplayer` property.
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+playgama_bridge_multiplayer_is_supported()
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+bridge.multiplayer.is_supported()
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.isSupported
+```
+
+{% endtab %}
+{% endtabs %}
+
+## State
+
+`disconnected`, `connecting`, `connected` or `reconnecting`.
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.state
+
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_STATE_CHANGED, state => {
+    console.log('Multiplayer state:', state)
+})
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+Bridge.multiplayer.state // MultiplayerState.Disconnected / Connecting / Connected / Reconnecting
+
+Bridge.multiplayer.stateChanged += state =>
+{
+    Debug.Log($"Multiplayer state: {state}");
+};
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Use the `Multiplayer State is` condition, the `On Multiplayer State Changed` trigger and the `PlaygamaBridge.MultiplayerState` expression.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Use the `Multiplayer Is State` condition, the `On Multiplayer State Changed` condition and the `PlaygamaBridge::MultiplayerState()` expression.
+{% endtab %}
+
+{% tab title="Godot" %}
+{% tabs %}
+{% tab title="Godot 3.x" %}
+
+```gdscript
+Bridge.mp.state # Bridge.MultiplayerState.CONNECTED ...
+
+func _ready():
+    Bridge.mp.connect("state_changed", self, "_on_multiplayer_state_changed")
+
+func _on_multiplayer_state_changed(state):
+    print("Multiplayer state: ", state)
+```
+
+{% endtab %}
+
+{% tab title="Godot 4.x" %}
+
+```gdscript
+Bridge.mp.state # Bridge.MultiplayerState.CONNECTED ...
+
+func _ready():
+    Bridge.mp.state_changed.connect(_on_multiplayer_state_changed)
+
+func _on_multiplayer_state_changed(state):
+    print("Multiplayer state: ", state)
+```
+
+{% endtab %}
+{% endtabs %}
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+playgama_bridge_multiplayer_state()
+
+// Async Social Event
+if async_load[? "type"] == "playgama_bridge_multiplayer_state_changed" {
+    var state = async_load[? "data"]
+}
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+bridge.multiplayer.state()
+
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_STATE_CHANGED, function (_, state)
+    print("Multiplayer state: " .. state)
+end)
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.state
+
+bridge.multiplayer.on(EVENT_NAME.MULTIPLAYER_STATE_CHANGED, (state) => {
+    console.log('Multiplayer state:', state)
+})
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Create Room
+
+Creates a room and enters it as the host. Returns the room code.
+
+| Option             | Type              | Default | Description                                                                                                                                                                |
+| ------------------ | ----------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxPlayers`       | number            | `4`     | Room size, from 2 to 16 players.                                                                                                                                           |
+| `isVisible`        | boolean           | `false` | Visible rooms take part in quick match and the room list.                                                                                                                  |
+| `isOpen`           | boolean           | `true`  | Closed rooms do not accept new players.                                                                                                                                    |
+| `filter`           | flat object       | —       | Matchmaking key, up to 16 values; see [Filter and properties](#how-it-works). A visible room is found by quick match and the filtered room list only with the same filter. |
+| `properties`       | flat object       | —       | Room properties.                                                                                                                                                           |
+| `playerProperties` | flat object       | —       | Properties of the local player.                                                                                                                                            |
+| `syncState`        | boolean or object | —       | `true` or `{ updatesPerSecond }`: synchronizes the game world, see [Sync State](#sync-state).                                                                              |
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.createRoom({
+    maxPlayers: 2,
+    properties: { map: 'forest' },
+})
+    .then(roomId => {
+        // show roomId to the player, friends join with it
+    })
+    .catch(error => {
+        console.log(error.code) // MULTIPLAYER_CONNECTION_FAILED...
+    })
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+var options = new Dictionary<string, object>
+{
+    { "maxPlayers", 2 },
+    { "properties", new Dictionary<string, object> { { "map", "forest" } } },
+};
+
+Bridge.multiplayer.CreateRoom(options, (success, roomId) =>
+{
+    if (!success)
+    {
+        Debug.Log(Bridge.multiplayer.lastError);
+    }
+});
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Add the options with `Add Action Parameter` (dotted keys go into nested options), call `Multiplayer Create Room`, then handle the `On Multiplayer Create Room Completed` trigger. The room code is in `PlaygamaBridge.MultiplayerRoomId`, the error code in `PlaygamaBridge.MultiplayerLastErrorCode`.
+
+<details>
+
+<summary>Copy This Example</summary>
+
+```
+{"is-c3-clipboard-data":true,"type":"events","items":[{"eventType":"block","conditions":[{"id":"on-clicked","objectClass":"Button"}],"actions":[{"id":"add-action-parameter","objectClass":"PlaygamaBridge","parameters":{"key":"\"maxPlayers\"","value":"2"}},{"id":"add-action-parameter","objectClass":"PlaygamaBridge","parameters":{"key":"\"properties.map\"","value":"\"forest\""}},{"id":"multiplayer-create-room","objectClass":"PlaygamaBridge"}]},{"eventType":"block","conditions":[{"id":"on-multiplayer-create-room-completed","objectClass":"PlaygamaBridge"}],"actions":[],"children":[{"eventType":"block","conditions":[{"id":"is-last-action-completed-successfully","objectClass":"PlaygamaBridge"}],"actions":[{"type":"comment","text":"show PlaygamaBridge.MultiplayerRoomId"}]}]}]}
+```
+
+</details>
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Add the options with `Add Action Parameter` (dotted paths go into nested options), call `Multiplayer Create Room`, then handle the `On Multiplayer Create Room Completed` condition. The room code is in `PlaygamaBridge::MultiplayerRoomId()`, the error code in `PlaygamaBridge::MultiplayerLastError()`.
+
+<details>
+
+<summary>Copy This Example</summary>
+
+```
+{"000kind":"GDEVELOP_EventsAndInstructions_CLIPBOARD_KIND-jsBdHbLy912y8Rc","content":{"eventsList":[{"type":"BuiltinCommonInstructions::Standard","conditions":[{"type":{"value":"PanelSpriteButton::PanelSpriteButton::IsClicked"},"parameters":["Button",""]}],"actions":[{"type":{"value":"PlaygamaBridge::AddActionParameter"},"parameters":["","\"maxPlayers\"","\"2\"",""]},{"type":{"value":"PlaygamaBridge::AddActionParameter"},"parameters":["","\"properties.map\"","\"forest\"",""]},{"type":{"value":"PlaygamaBridge::MultiplayerCreateRoom"},"parameters":["",""]}]},{"type":"BuiltinCommonInstructions::Standard","conditions":[{"type":{"value":"PlaygamaBridge::OnMultiplayerCreateRoomCompleted"},"parameters":["",""]}],"actions":[],"events":[{"type":"BuiltinCommonInstructions::Standard","conditions":[{"type":{"value":"PlaygamaBridge::IsLastActionCompletedSuccessfully"},"parameters":["",""]}],"actions":[{"type":{"value":"DebuggerTools::ConsoleLog"},"parameters":["PlaygamaBridge::MultiplayerRoomId()","\"info\"",""]}]}]}],"eventsCount":2,"actionsList":[],"actionsCount":0,"conditionsList":[],"conditionsCount":0}}
+```
+
+</details>
+{% endtab %}
+
+{% tab title="Godot" %}
+{% tabs %}
+{% tab title="Godot 3.x" %}
+
+```gdscript
+var options = {
+    "maxPlayers": 2,
+    "properties": { "map": "forest" }
+}
+Bridge.mp.create_room(options, funcref(self, "_on_create_room_completed"))
+
+func _on_create_room_completed(success, room_id):
+    if not success:
+        print(Bridge.mp.last_error)
+```
+
+{% endtab %}
+
+{% tab title="Godot 4.x" %}
+
+```gdscript
+var options = {
+    "maxPlayers": 2,
+    "properties": { "map": "forest" }
+}
+Bridge.mp.create_room(options, Callable(self, "_on_create_room_completed"))
+
+func _on_create_room_completed(success, room_id):
+    if not success:
+        print(Bridge.mp.last_error)
+```
+
+{% endtab %}
+{% endtabs %}
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+var options = {
+    maxPlayers: 2,
+    properties: { map: "forest" }
+}
+playgama_bridge_multiplayer_create_room(json_stringify(options))
+
+// callback via Async Social Event
+if async_load[? "type"] == "playgama_bridge_multiplayer_create_room_callback" {
+    if async_load[? "success"] {
+        var room_id = async_load[? "data"]
+    } else {
+        var error_code = async_load[? "data"]
+    }
+}
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+bridge.multiplayer.create_room(
+    {
+        maxPlayers = 2,
+        properties = { map = "forest" }
+    },
+    function (_, room_id)
+        -- show room_id to the player
+    end,
+    function (_, error)
+        -- error is the code, e.g. MULTIPLAYER_CONNECTION_FAILED
+    end
+)
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.createRoom({ maxPlayers: 2, properties: { map: 'forest' } })
+    .then((roomId) => {
+        // show roomId to the player
+    })
+    .catch((error) => {
+        console.log(error.code)
+    })
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Join Room
+
+Enters a room by its code. Options: `playerProperties`, `syncState` (see [Sync State](#sync-state)).
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.joinRoom('K7M4X9TR')
+    .then(() => {
+        // in the room
+    })
+    .catch(error => {
+        // MULTIPLAYER_ROOM_NOT_FOUND, MULTIPLAYER_ROOM_FULL, MULTIPLAYER_ROOM_CLOSED...
+    })
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+Bridge.multiplayer.JoinRoom("K7M4X9TR", null, success =>
+{
+    if (!success)
+    {
+        Debug.Log(Bridge.multiplayer.lastError);
+    }
+});
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Call `Multiplayer Join Room` with the code, then handle `On Multiplayer Join Room Completed` and check `Is Last Action Completed Successfully`.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Call `Multiplayer Join Room` with the code, then handle `On Multiplayer Join Room Completed` and check `Is Last Action Completed Successfully`.
+{% endtab %}
+
+{% tab title="Godot" %}
+{% tabs %}
+{% tab title="Godot 3.x" %}
+
+```gdscript
+Bridge.mp.join_room("K7M4X9TR", null, funcref(self, "_on_join_room_completed"))
+
+func _on_join_room_completed(success):
+    print("Joined: ", success)
+```
+
+{% endtab %}
+
+{% tab title="Godot 4.x" %}
+
+```gdscript
+Bridge.mp.join_room("K7M4X9TR", null, Callable(self, "_on_join_room_completed"))
+
+func _on_join_room_completed(success):
+    print("Joined: ", success)
+```
+
+{% endtab %}
+{% endtabs %}
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+playgama_bridge_multiplayer_join_room("K7M4X9TR", "")
+
+if async_load[? "type"] == "playgama_bridge_multiplayer_join_room_callback" {
+    if async_load[? "success"] {
+        // in the room
+    }
+}
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+bridge.multiplayer.join_room("K7M4X9TR", function ()
+    -- in the room
+end, function (_, error)
+    -- error code
+end)
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.joinRoom('K7M4X9TR')
+    .then(() => {
+        // in the room
+    })
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Join Or Create Room
+
+Quick match: enters a visible open room with a free seat, the same `maxPlayers` and exactly the same `filter`, or creates a visible room when none fits. Returns the room code.
+
+| Option             | Type              | Description                                                                                                                          |
+| ------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `maxPlayers`       | number            | Players meet only in rooms of the same size.                                                                                         |
+| `filter`           | flat object       | Matchmaking key, up to 16 values: players meet only in rooms with exactly the same filter. No filter matches only rooms without one. |
+| `properties`       | flat object       | Extra properties of a created room.                                                                                                  |
+| `playerProperties` | flat object       | As in [Create Room](#create-room).                                                                                                   |
+| `syncState`        | boolean or object | As in [Create Room](#create-room).                                                                                                   |
+
+Put the game version or mode into `filter` so that incompatible builds never meet.
+
+Keep the filter to the splits that really matter: every extra key and value divides the players into smaller pools, and with few players online at once each one ends up alone in its own room. Never put unique values into it (a match or invite code, a player or QA id, a build hash, a timestamp): no other player has the same filter, so nobody ever joins. Values that only describe the match (map, league, skin, round) go into `properties`.
+
+If the game mechanics allow it, keep the room open while the match is running, for example with bots filling the empty seats, instead of closing it with `setRoomOpen(false)` right away: then a player who starts the quick match a bit later joins this room and does not create a new one.
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.joinOrCreateRoom({ maxPlayers: 2, filter: { mode: 'duel' } })
+    .then(roomId => {
+        // bridge.multiplayer.isHost tells whether a new room was created
+    })
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+var options = new Dictionary<string, object>
+{
+    { "maxPlayers", 2 },
+    { "filter", new Dictionary<string, object> { { "mode", "duel" } } },
+};
+
+Bridge.multiplayer.JoinOrCreateRoom(options, (success, roomId) => { });
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Add `maxPlayers` and `filter.mode` with `Add Action Parameter`, call `Multiplayer Join Or Create Room`, then handle `On Multiplayer Join Or Create Room Completed`.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Add `maxPlayers` and `filter.mode` with `Add Action Parameter`, call `Multiplayer Join Or Create Room`, then handle `On Multiplayer Join Or Create Room Completed`.
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+Bridge.mp.join_or_create_room({ "maxPlayers": 2, "filter": { "mode": "duel" } }, Callable(self, "_on_matched"))
+
+func _on_matched(success, room_id):
+    pass
+```
+
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+playgama_bridge_multiplayer_join_or_create_room(json_stringify({ maxPlayers: 2, filter: { mode: "duel" } }))
+
+if async_load[? "type"] == "playgama_bridge_multiplayer_join_or_create_room_callback" {
+    if async_load[? "success"] {
+        var room_id = async_load[? "data"]
+    }
+}
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+bridge.multiplayer.join_or_create_room({ maxPlayers = 2, filter = { mode = "duel" } }, function (_, room_id)
+end, function (_, error)
+end)
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.joinOrCreateRoom({ maxPlayers: 2, filter: { mode: 'duel' } })
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Get Rooms
+
+Lists visible open rooms with a free seat in the selected [region](#regions). Options: `filter` (only rooms created with exactly this filter; all rooms when left out), `maxPlayers`, `limit`. Each room: `id`, `type`, `maxPlayers`, `playerCount`, `filter`, `properties`.
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.getRooms({ filter: { mode: 'duel' }, limit: 20 })
+    .then(rooms => {
+        rooms.forEach(room => console.log(room.id, room.playerCount, room.maxPlayers))
+    })
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+var options = new Dictionary<string, object>
+{
+    { "filter", new Dictionary<string, object> { { "mode", "duel" } } },
+    { "limit", 20 },
+};
+
+Bridge.multiplayer.GetRooms(options, (success, rooms) =>
+{
+    foreach (var room in rooms)
+    {
+        Debug.Log($"{room.id} {room.playerCount}/{room.maxPlayers} {room.properties["mode"]}");
+    }
+});
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Add `filter.mode` and `limit` with `Add Action Parameter`, call `Multiplayer Get Rooms`, then in `On Multiplayer Get Rooms Completed` loop from `0` to `PlaygamaBridge.MultiplayerRoomListCount - 1` and read `MultiplayerRoomListId(index)`, `MultiplayerRoomListPlayerCount(index)`, `MultiplayerRoomListMaxPlayers(index)`, `MultiplayerRoomListProperty(index, "mode")`.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Add `filter.mode` and `limit` with `Add Action Parameter`, call `Multiplayer Get Rooms`, then in `On Multiplayer Get Rooms Completed` repeat `PlaygamaBridge::MultiplayerRoomListCount()` times and read `MultiplayerRoomListId(index)`, `MultiplayerRoomListPlayerCount(index)`, `MultiplayerRoomListMaxPlayers(index)`, `MultiplayerRoomListProperty(index, "mode")`.
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+Bridge.mp.get_rooms({ "filter": { "mode": "duel" }, "limit": 20 }, Callable(self, "_on_get_rooms_completed"))
+
+func _on_get_rooms_completed(success, rooms):
+    for room in rooms:
+        print(room.id, " ", room.playerCount, "/", room.maxPlayers)
+```
+
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+playgama_bridge_multiplayer_get_rooms(json_stringify({ filter: { mode: "duel" }, limit: 20 }))
+
+if async_load[? "type"] == "playgama_bridge_multiplayer_get_rooms_callback" {
+    if async_load[? "success"] {
+        var rooms = json_parse(async_load[? "data"])
+    }
+}
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+bridge.multiplayer.get_rooms({ filter = { mode = "duel" }, limit = 20 }, function (_, rooms)
+    for _, room in ipairs(rooms) do
+        print(room.id, room.playerCount, room.maxPlayers)
+    end
+end)
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.getRooms({ filter: { mode: 'duel' }, limit: 20 }).then((rooms) => { })
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Regions
+
+Optional. By default the server picks the best region for the player, so most games do not need this. Use it to let the player choose a region themselves.
+
+`getRegions()` returns the ids of the server regions, for example `['eu', 'us', 'ap']`, for a region picker. `region` is the region of the next room created with `createRoom()` or `joinOrCreateRoom()` and of `getRooms()`; it is empty until `getRegions()`, `setRegion()` or the first room call, and `getRegions()` sets it to the region the server picks for the player. `setRegion(id)` changes it; the room the player is in stays where it is. `joinRoom()` with a room code always enters the region of the room, whatever region is selected.
+
+The choice lasts while the page is open. To keep it between launches, save it in [storage](https://wiki.playgama.com/playgama/bridge-sdk/api/storage.md) and call `setRegion()` on start.
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.getRegions()
+    .then(regions => {
+        // Show regions, highlight bridge.multiplayer.region
+    })
+
+// The player picked a region
+bridge.multiplayer.setRegion('us')
+bridge.multiplayer.joinOrCreateRoom({ maxPlayers: 2 })
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+Bridge.multiplayer.GetRegions((success, regions) =>
+{
+    // Show regions, highlight Bridge.multiplayer.region
+});
+
+// The player picked a region
+Bridge.multiplayer.SetRegion("us");
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Call `Multiplayer Get Regions`, then in `On Multiplayer Get Regions Completed` loop from `0` to `PlaygamaBridge.MultiplayerRegionListCount - 1` and read `MultiplayerRegionListId(index)`; the selected region is `PlaygamaBridge.MultiplayerRegion`. When the player picks one, call `Multiplayer Set Region`.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Call `Multiplayer Get Regions`, then in `On Multiplayer Get Regions Completed` repeat `PlaygamaBridge::MultiplayerRegionListCount()` times and read `MultiplayerRegionListId(index)`; the selected region is `PlaygamaBridge::MultiplayerRegion()`. When the player picks one, call `Multiplayer Set Region`.
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+Bridge.mp.get_regions(Callable(self, "_on_get_regions_completed"))
+
+func _on_get_regions_completed(success, regions):
+    # Show regions, highlight Bridge.mp.region
+    pass
+
+# The player picked a region
+Bridge.mp.set_region("us")
+```
+
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+playgama_bridge_multiplayer_get_regions()
+
+if async_load[? "type"] == "playgama_bridge_multiplayer_get_regions_callback" {
+    if async_load[? "success"] {
+        var regions = json_parse(async_load[? "data"])
+        var selected = playgama_bridge_multiplayer_region()
+    }
+}
+
+// The player picked a region
+playgama_bridge_multiplayer_set_region("us")
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+bridge.multiplayer.get_regions(function (_, regions)
+    -- Show regions, highlight bridge.multiplayer.region()
+end, function (_, error)
+end)
+
+-- The player picked a region
+bridge.multiplayer.set_region("us")
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.getRegions().then((regions) => { })
+
+bridge.multiplayer.setRegion('us')
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Invite To Room
+
+Asks the platform to share a link to the current room; a player who opens it gets the room code in [`launchRoomId`](#launch-room-id). Check `isInviteSupported` first; where it is `false`, show the room code instead. Options: `text`, `image`.
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+if (bridge.multiplayer.isInviteSupported) {
+    bridge.multiplayer.inviteToRoom({ text: 'Join my room!' })
+}
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+if (Bridge.multiplayer.isInviteSupported)
+{
+    Bridge.multiplayer.InviteToRoom(new Dictionary<string, object> { { "text", "Join my room!" } }, success => { });
+}
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Check `Is Multiplayer Invite Supported`, call `Multiplayer Invite To Room` (text from `Add Action Parameter`), then handle `On Multiplayer Invite To Room Completed`.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Check `Is Multiplayer Invite Supported`, call `Multiplayer Invite To Room` (text from `Add Action Parameter`), then handle `On Multiplayer Invite To Room Completed`.
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+if Bridge.mp.is_invite_supported:
+    Bridge.mp.invite_to_room({ "text": "Join my room!" })
+```
+
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+if playgama_bridge_multiplayer_is_invite_supported() {
+    playgama_bridge_multiplayer_invite_to_room(json_stringify({ text: "Join my room!" }))
+}
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+if bridge.multiplayer.is_invite_supported() then
+    bridge.multiplayer.invite_to_room({ text = "Join my room!" })
+end
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+if (bridge.multiplayer.isInviteSupported) {
+    bridge.multiplayer.inviteToRoom({ text: 'Join my room!' })
+}
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Launch Room ID
+
+The room code from the invite link the game was opened with, or empty. Join that room right after initialization. It is cleared once the player enters any room.
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+const roomId = bridge.multiplayer.launchRoomId
+if (roomId) {
+    bridge.multiplayer.joinRoom(roomId)
+}
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+var roomId = Bridge.multiplayer.launchRoomId;
+if (!string.IsNullOrEmpty(roomId))
+{
+    Bridge.multiplayer.JoinRoom(roomId);
+}
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Use the `Has Multiplayer Launch Room Id` condition and the `PlaygamaBridge.MultiplayerLaunchRoomId` expression.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Use the `PlaygamaBridge::MultiplayerLaunchRoomId()` expression.
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+if Bridge.mp.launch_room_id:
+    Bridge.mp.join_room(Bridge.mp.launch_room_id)
+```
+
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+var room_id = playgama_bridge_multiplayer_launch_room_id()
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+local room_id = bridge.multiplayer.launch_room_id()
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.launchRoomId
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Leave Room
+
+`leaveRoom()` takes the player out of the room. The room left event comes with a reason: `left` (the game called `leaveRoom()`), `connection_lost` (reconnecting failed) or `room_closed` (the server closed the room).
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.leaveRoom()
+
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_ROOM_LEFT, reason => {
+    // back to the menu
+})
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+Bridge.multiplayer.LeaveRoom();
+
+Bridge.multiplayer.roomLeft += reason =>
+{
+    // RoomLeaveReason.Left / ConnectionLost / RoomClosed
+};
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Call `Multiplayer Leave Room`. Handle `On Multiplayer Room Left`; the reason is in `PlaygamaBridge.MultiplayerLastRoomLeftReason` or the `Multiplayer Room Left Reason is` condition.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Call `Multiplayer Leave Room`. Handle `On Multiplayer Room Left`; the reason is in `PlaygamaBridge::MultiplayerRoomLeftReason()`.
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+Bridge.mp.leave_room()
+
+# Godot 4.x; in Godot 3.x connect with Bridge.mp.connect("room_left", self, "_on_room_left")
+Bridge.mp.room_left.connect(_on_room_left)
+
+func _on_room_left(reason):
+    pass
+```
+
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+playgama_bridge_multiplayer_leave_room()
+
+if async_load[? "type"] == "playgama_bridge_multiplayer_room_left" {
+    var reason = async_load[? "data"]
+}
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+bridge.multiplayer.leave_room()
+
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_ROOM_LEFT, function (_, reason)
+end)
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.leaveRoom()
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Room
+
+`roomId` is the room code. `room` holds `id`, `maxPlayers`, `isOpen`, `isVisible`, `hostId` and `properties`; the room updated event fires when any of them changes. The host can change the room:
+
+* `setRoomOpen(isOpen)` — closes the room for new players or opens it again. Close a room only when the game cannot accept a new player mid-match: an open room lets quick match fill it (see [Join Or Create Room](#join-or-create-room)).
+* `setRoomVisible(isVisible)` — shows or hides the room in quick match and the room list.
+* `setRoomProperties(properties)` — keys are merged into the room properties.
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+const room = bridge.multiplayer.room
+console.log(room.id, room.properties.map)
+
+if (bridge.multiplayer.isHost) {
+    bridge.multiplayer.setRoomOpen(false)
+    bridge.multiplayer.setRoomProperties({ round: 2 })
+}
+
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_ROOM_UPDATED, room => { })
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+var room = Bridge.multiplayer.room;
+Debug.Log($"{room.id} {room.properties["map"]}");
+
+if (Bridge.multiplayer.isHost)
+{
+    Bridge.multiplayer.SetRoomOpen(false);
+    Bridge.multiplayer.SetRoomProperties(new Dictionary<string, object> { { "round", 2 } });
+}
+
+Bridge.multiplayer.roomUpdated += room => { };
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Expressions: `MultiplayerRoomId`, `MultiplayerRoomMaxPlayers`, `MultiplayerRoomProperty("map")`. Actions: `Multiplayer Set Room Open`, `Multiplayer Set Room Visible`, `Multiplayer Set Room Properties` (the properties come from `Add Action Parameter`). Trigger: `On Multiplayer Room Updated`.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Expressions: `MultiplayerRoomId()`, `MultiplayerRoomMaxPlayers()`, `MultiplayerRoomProperty("map")`. Actions: `Multiplayer Set Room Open`, `Multiplayer Set Room Visible`, `Multiplayer Set Room Properties` (the properties come from `Add Action Parameter`). Condition: `On Multiplayer Room Updated`.
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+var room = Bridge.mp.room
+print(room.id, " ", room.properties.get("map"))
+
+if Bridge.mp.is_host:
+    Bridge.mp.set_room_open(false)
+    Bridge.mp.set_room_properties({ "round": 2 })
+```
+
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+var room = json_parse(playgama_bridge_multiplayer_room())
+
+if playgama_bridge_multiplayer_is_host() {
+    playgama_bridge_multiplayer_set_room_open(false)
+    playgama_bridge_multiplayer_set_room_properties(json_stringify({ round: 2 }))
+}
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+local room = bridge.multiplayer.room()
+
+if bridge.multiplayer.is_host() then
+    bridge.multiplayer.set_room_open(false)
+    bridge.multiplayer.set_room_properties({ round = 2 })
+end
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+const room = bridge.multiplayer.room
+bridge.multiplayer.setRoomProperties({ round: 2 })
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Players
+
+`players` lists the connected players: `id`, `name`, `isHost`, `isConnected`, `properties`. `playerId` is the local player, `hostId` the host, `isHost` tells whether the local player is the host. Events: player joined, player left, player updated (properties or connection changed) and host changed (the new host, or none). Each player can change its own properties with `setPlayerProperties(properties)`; keys are merged.
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.players.forEach(player => console.log(player.name, player.properties.ready))
+bridge.multiplayer.setPlayerProperties({ ready: true })
+
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_PLAYER_JOINED, player => { })
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_PLAYER_LEFT, player => { })
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_PLAYER_UPDATED, player => { })
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_HOST_CHANGED, host => {
+    if (bridge.multiplayer.isHost) {
+        // this device runs the game now
+    }
+})
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+foreach (var player in Bridge.multiplayer.players)
+{
+    Debug.Log($"{player.name} {player.properties["ready"]}");
+}
+
+Bridge.multiplayer.SetPlayerProperties(new Dictionary<string, object> { { "ready", true } });
+
+Bridge.multiplayer.playerJoined += player => { };
+Bridge.multiplayer.playerLeft += player => { };
+Bridge.multiplayer.playerUpdated += player => { };
+Bridge.multiplayer.hostChanged += host =>
+{
+    if (Bridge.multiplayer.isHost)
+    {
+        // this device runs the game now
+    }
+};
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Loop from `0` to `MultiplayerRoomPlayersCount - 1` and read `MultiplayerRoomPlayerId(index)`, `MultiplayerRoomPlayerName(index)`, `MultiplayerRoomPlayerIsHost(index)`, `MultiplayerRoomPlayerIsConnected(index)`, `MultiplayerRoomPlayerProperty(index, "ready")`. `MultiplayerPlayerId` and `MultiplayerHostId` are the local player and the host, `Is Multiplayer Host` checks the role.
+
+Triggers `On Multiplayer Player Joined`, `On Multiplayer Player Left`, `On Multiplayer Player Updated` and `On Multiplayer Host Changed` fill `MultiplayerLastEventPlayerId`, `MultiplayerLastEventPlayerName` and `MultiplayerLastEventPlayerProperty("ready")`. `Multiplayer Set Player Properties` takes the properties from `Add Action Parameter`.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Repeat `MultiplayerPlayersCount()` times and read `MultiplayerRoomPlayerId(index)`, `MultiplayerRoomPlayerName(index)`, `MultiplayerRoomPlayerProperty(index, "ready")`; the `MultiplayerRoomPlayerIsHost` and `MultiplayerRoomPlayerIsConnected` conditions take the index. `MultiplayerPlayerId()` and `MultiplayerHostId()` are the local player and the host, `Multiplayer Is Host` checks the role.
+
+Conditions `On Multiplayer Player Joined`, `On Multiplayer Player Left`, `On Multiplayer Player Updated` and `On Multiplayer Host Changed` fill `MultiplayerEventPlayerId()`, `MultiplayerEventPlayerName()` and `MultiplayerEventPlayerProperty("ready")`. `Multiplayer Set Player Properties` takes the properties from `Add Action Parameter`.
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+for player in Bridge.mp.players:
+    print(player.name, " ", player.properties.get("ready"))
+
+Bridge.mp.set_player_properties({ "ready": true })
+
+# Godot 4.x; in Godot 3.x use Bridge.mp.connect("player_joined", self, "_on_player_joined")
+Bridge.mp.player_joined.connect(_on_player_joined)
+Bridge.mp.player_left.connect(_on_player_left)
+Bridge.mp.host_changed.connect(_on_host_changed)
+
+func _on_host_changed(host):
+    if Bridge.mp.is_host:
+        pass # this device runs the game now
+```
+
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+var players = json_parse(playgama_bridge_multiplayer_players())
+playgama_bridge_multiplayer_set_player_properties(json_stringify({ ready: true }))
+
+if async_load[? "type"] == "playgama_bridge_multiplayer_player_joined" {
+    var player = json_parse(async_load[? "data"])
+}
+
+if async_load[? "type"] == "playgama_bridge_multiplayer_host_changed" {
+    if playgama_bridge_multiplayer_is_host() {
+        // this device runs the game now
+    }
+}
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+for _, player in ipairs(bridge.multiplayer.players()) do
+    print(player.name, player.properties.ready)
+end
+
+bridge.multiplayer.set_player_properties({ ready = true })
+
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_PLAYER_JOINED, function (_, player)
+end)
+
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_HOST_CHANGED, function (_, host)
+    if bridge.multiplayer.is_host() then
+        -- this device runs the game now
+    end
+end)
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.players.forEach((player) => console.log(player.name))
+bridge.multiplayer.setPlayerProperties({ ready: true })
+bridge.multiplayer.on(EVENT_NAME.MULTIPLAYER_PLAYER_JOINED, (player) => { })
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Send Messages
+
+`send(type, data, { to })` sends a message. `to` is `others` (default), `all` (the sender too), `host`, a player id or a list of player ids.
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.send('move', { x: 3, y: 5 })
+bridge.multiplayer.send('move', { x: 3, y: 5 }, { to: bridge.MULTIPLAYER_TARGET.HOST })
+bridge.multiplayer.send('chat', { text: 'gg' }, { to: playerId })
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+var data = new Dictionary<string, object> { { "x", 3 }, { "y", 5 } };
+
+Bridge.multiplayer.Send("move", data);
+Bridge.multiplayer.Send("move", data, MultiplayerTarget.Host);
+Bridge.multiplayer.Send("move", data, playerId);
+```
+
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Add the data with `Add Action Parameter`, then call `Multiplayer Send Message` with the type and the target (`Others`, `All`, `Host` or `Player (by ID)` with the player id).
+
+<details>
+
+<summary>Copy This Example</summary>
+
+```
+{"is-c3-clipboard-data":true,"type":"events","items":[{"eventType":"block","conditions":[{"id":"on-clicked","objectClass":"Button"}],"actions":[{"id":"add-action-parameter","objectClass":"PlaygamaBridge","parameters":{"key":"\"x\"","value":"3"}},{"id":"add-action-parameter","objectClass":"PlaygamaBridge","parameters":{"key":"\"y\"","value":"5"}},{"id":"multiplayer-send-message","objectClass":"PlaygamaBridge","parameters":{"type":"\"move\"","target":"host","player-id":"\"\""}}]}]}
+```
+
+</details>
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Add the data with `Add Action Parameter`, then call `Multiplayer Send` with the type and the target: `all`, `others` (empty), `host` or a player id.
+
+<details>
+
+<summary>Copy This Example</summary>
+
+```
+{"000kind":"GDEVELOP_EventsAndInstructions_CLIPBOARD_KIND-jsBdHbLy912y8Rc","content":{"eventsList":[{"type":"BuiltinCommonInstructions::Standard","conditions":[{"type":{"value":"PanelSpriteButton::PanelSpriteButton::IsClicked"},"parameters":["Button",""]}],"actions":[{"type":{"value":"PlaygamaBridge::AddActionParameter"},"parameters":["","\"x\"","\"3\"",""]},{"type":{"value":"PlaygamaBridge::AddActionParameter"},"parameters":["","\"y\"","\"5\"",""]},{"type":{"value":"PlaygamaBridge::MultiplayerSend"},"parameters":["","\"move\"","\"host\"",""]}]}],"eventsCount":1,"actionsList":[],"actionsCount":0,"conditionsList":[],"conditionsCount":0}}
+```
+
+</details>
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+Bridge.mp.send("move", { "x": 3, "y": 5 })
+Bridge.mp.send("move", { "x": 3, "y": 5 }, { "to": Bridge.MultiplayerTarget.HOST })
+```
+
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+// target: "others" (or ""), "all", "host", a player id or a JSON array of ids
+playgama_bridge_multiplayer_send("move", json_stringify({ x: 3, y: 5 }), "host")
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+bridge.multiplayer.send("move", { x = 3, y = 5 })
+bridge.multiplayer.send("move", { x = 3, y = 5 }, { to = bridge.MULTIPLAYER_TARGET.HOST })
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.send('move', { x: 3, y: 5 }, { to: 'host' })
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Receive Messages
+
+The message received event gives `type`, `data` and `from` (the sender's player id).
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_MESSAGE_RECEIVED, message => {
+    if (message.type === 'move') {
+        movePiece(message.from, message.data.x, message.data.y)
+    }
+})
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+Bridge.multiplayer.messageReceived += message =>
+{
+    if (message.type == "move")
+    {
+        var x = Convert.ToInt32(message.data["x"]);
+        var y = Convert.ToInt32(message.data["y"]);
+    }
+};
+```
+
+Messages are delivered once per frame, from `Update`.
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Handle `On Multiplayer Message Received` and read `MultiplayerLastMessageType`, `MultiplayerLastMessageFrom` and `MultiplayerLastMessageDataValue("x")`. The trigger fires once per message.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Handle `On Multiplayer Message Received` and read `MultiplayerLastMessageType()`, `MultiplayerLastMessageFrom()` and `MultiplayerLastMessageDataValue("x")`. Messages are delivered one per frame in the order they arrived.
+{% endtab %}
+
+{% tab title="Godot" %}
+
+```gdscript
+# Godot 4.x; in Godot 3.x use Bridge.mp.connect("message_received", self, "_on_message_received")
+Bridge.mp.message_received.connect(_on_message_received)
+
+func _on_message_received(message):
+    if message.type == "move":
+        move_piece(message.from, message.data.x, message.data.y)
+```
+
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+if async_load[? "type"] == "playgama_bridge_multiplayer_message_received" {
+    var message = json_parse(async_load[? "data"])
+    if message.type == "move" {
+        var x = message.data.x
+        var sender = message.from
+    }
+}
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_MESSAGE_RECEIVED, function (_, message)
+    if message.type == "move" then
+        move_piece(message.from, message.data.x, message.data.y)
+    end
+end)
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.on(EVENT_NAME.MULTIPLAYER_MESSAGE_RECEIVED, (message) => { })
+```
+
+{% endtab %}
+{% endtabs %}
+
+## Sync State
+
+Optional. Bridge keeps the game world on the host and copies it to the other players. Every player enters the room with the `syncState` option: `true`, or `{ updatesPerSecond: 5 }` for fewer snapshots a second (from 1 to 10, 10 by default). The host sets its world whenever it changes, and up to `updatesPerSecond` times a second Bridge sends the latest one to the other players: they get it with the sync state received event. The server keeps the last world: when the host leaves or drops, the new host gets it with the same event and the game goes on from the same point. The world is passed in the same format as [message](#send-messages) data.
+
+Without `syncState` the game sends its state with messages itself, and a new host has only what its own device knows.
+
+{% tabs %}
+{% tab title="Plain JS" %}
+
+```javascript
+let world = { score: 0, ball: { x: 0, y: 0 } }
+
+// The starting world, set before entering the room
+bridge.multiplayer.setSyncState(world)
+
+// Every player enters the room with syncState
+bridge.multiplayer.createRoom({ syncState: { updatesPerSecond: 5 } })
+// bridge.multiplayer.joinRoom(roomId, { syncState: true })
+// bridge.multiplayer.joinOrCreateRoom({ maxPlayers: 2, syncState: true })
+
+// The other players get the host's world, a new host gets the last one
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_SYNC_STATE_RECEIVED, state => {
+    world = state
+})
+
+// Players send their actions to the host, the host changes the world
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_MESSAGE_RECEIVED, message => {
+    if (bridge.multiplayer.isHost && message.type === 'move') {
+        world.ball = message.data
+        bridge.multiplayer.setSyncState(world)
+    }
+})
+
+bridge.multiplayer.syncState // the last world set or received
+```
+
+Instead of `setSyncState()` and the event, `syncState` can take callbacks: Bridge takes the world from `getState()` on the host and passes received worlds to `applyState()`. Both must be synchronous and may run before the entry promise resolves; do not check `isHost` in `getState()`, the first snapshot is taken before the host role is confirmed.
+
+```javascript
+bridge.multiplayer.createRoom({
+    syncState: {
+        getState: () => world,
+        applyState: state => { world = state },
+        updatesPerSecond: 5,
+    },
+})
+```
+
+{% endtab %}
+
+{% tab title="Unity" %}
+
+```csharp
+var world = new Dictionary<string, object> { { "score", 0 }, { "ballX", 0 }, { "ballY", 0 } };
+
+// The starting world, set before entering the room
+Bridge.multiplayer.SetSyncState(world);
+
+// The other players get the host's world, a new host gets the last one
+Bridge.multiplayer.syncStateReceived += state =>
+{
+    world = state;
+    var score = Convert.ToInt32(world["score"]);
+};
+
+// Every player enters the room with syncState: true, or a dictionary with updatesPerSecond
+var options = new Dictionary<string, object>
+{
+    { "syncState", new Dictionary<string, object> { { "updatesPerSecond", 5 } } },
+};
+
+Bridge.multiplayer.CreateRoom(options);
+// Bridge.multiplayer.JoinRoom(roomId, options);
+// Bridge.multiplayer.JoinOrCreateRoom(new Dictionary<string, object> { { "maxPlayers", 2 }, { "syncState", true } });
+
+// Players send their actions to the host, the host changes the world
+Bridge.multiplayer.messageReceived += message =>
+{
+    if (Bridge.multiplayer.isHost && message.type == "move")
+    {
+        world["ballX"] = message.data["x"];
+        world["ballY"] = message.data["y"];
+        Bridge.multiplayer.SetSyncState(world);
+    }
+};
+
+Bridge.multiplayer.syncState // the last world set or received
+```
+
+The world is a flat dictionary, like message data: nested values arrive as JSON strings.
+{% endtab %}
+
+{% tab title="Construct 3" %}
+Turn the sync on when entering a room: before `Multiplayer Create Room`, `Multiplayer Join Room` or `Multiplayer Join Or Create Room` add `Add Bool Action Parameter` with the key `syncState` checked, or `Add Action Parameter` with the key `syncState.updatesPerSecond` and a number from 1 to 10.
+
+Add the world with `Add Action Parameter`, then call `Multiplayer Set Sync State`; each call replaces the whole world, so add every key each time. Handle `On Multiplayer Sync State Received` and read `MultiplayerSyncStateValue("score")`: it returns the last world set or received, on the host too.
+{% endtab %}
+
+{% tab title="GDevelop" %}
+Turn the sync on when entering a room: before `Multiplayer Create Room`, `Multiplayer Join Room` or `Multiplayer Join Or Create Room` add `syncState` with `Add Bool Action Parameter`, or `syncState.updatesPerSecond` from 1 to 10 with `Add Action Parameter`.
+
+Add the world with `Add Action Parameter`, then call `Multiplayer Set Sync State`; each call replaces the whole world. Handle `On Multiplayer Sync State Received` (true at most once per frame, with the latest world) and read `MultiplayerSyncStateValue("score")`: it returns the last world set or received, on the host too.
+{% endtab %}
+
+{% tab title="Godot" %}
+{% tabs %}
+{% tab title="Godot 3.x" %}
+
+```gdscript
+var world = { "score": 0, "ball": { "x": 0, "y": 0 } }
+
+func _ready():
+    Bridge.mp.connect("sync_state_received", self, "_on_sync_state_received")
+    Bridge.mp.connect("message_received", self, "_on_message_received")
+
+    # The starting world, then every player enters the room with syncState
+    Bridge.mp.set_sync_state(world)
+    Bridge.mp.create_room({ "syncState": { "updatesPerSecond": 5 } })
+    # Bridge.mp.join_room(room_id, { "syncState": true })
+    # Bridge.mp.join_or_create_room({ "maxPlayers": 2, "syncState": true })
+
+# Players send their actions to the host, the host changes the world
+func _on_message_received(message):
+    if Bridge.mp.is_host and message.type == "move":
+        world.ball = message.data
+        Bridge.mp.set_sync_state(world)
+
+# The other players get the host's world, a new host gets the last one
+func _on_sync_state_received(state):
+    world = state
+```
+
+{% endtab %}
+
+{% tab title="Godot 4.x" %}
+
+```gdscript
+var world = { "score": 0, "ball": { "x": 0, "y": 0 } }
+
+func _ready():
+    Bridge.mp.sync_state_received.connect(_on_sync_state_received)
+    Bridge.mp.message_received.connect(_on_message_received)
+
+    # The starting world, then every player enters the room with syncState
+    Bridge.mp.set_sync_state(world)
+    Bridge.mp.create_room({ "syncState": { "updatesPerSecond": 5 } })
+    # Bridge.mp.join_room(room_id, { "syncState": true })
+    # Bridge.mp.join_or_create_room({ "maxPlayers": 2, "syncState": true })
+
+# Players send their actions to the host, the host changes the world
+func _on_message_received(message):
+    if Bridge.mp.is_host and message.type == "move":
+        world.ball = message.data
+        Bridge.mp.set_sync_state(world)
+
+# The other players get the host's world, a new host gets the last one
+func _on_sync_state_received(state):
+    world = state
+```
+
+{% endtab %}
+{% endtabs %}
+
+`Bridge.mp.sync_state` is the last world set or received.
+{% endtab %}
+
+{% tab title="GameMaker" %}
+
+```javascript
+var world = { score: 0, ball: { x: 0, y: 0 } }
+
+// The starting world, then every player enters the room with syncState
+playgama_bridge_multiplayer_set_sync_state(json_stringify(world))
+playgama_bridge_multiplayer_create_room(json_stringify({ syncState: { updatesPerSecond: 5 } }))
+// playgama_bridge_multiplayer_join_room(room_id, json_stringify({ syncState: true }))
+// playgama_bridge_multiplayer_join_or_create_room(json_stringify({ maxPlayers: 2, syncState: true }))
+
+// Only the host changes the world
+if playgama_bridge_multiplayer_is_host() {
+    world.ball = { x: 3, y: 5 }
+    playgama_bridge_multiplayer_set_sync_state(json_stringify(world))
+}
+
+// Async Social Event: the other players get the host's world, a new host gets the last one
+if async_load[? "type"] == "playgama_bridge_multiplayer_sync_state_received" {
+    world = json_parse(async_load[? "data"])
+}
+
+// The last world set or received
+var current = json_parse(playgama_bridge_multiplayer_sync_state())
+```
+
+{% endtab %}
+
+{% tab title="Defold" %}
+
+```lua
+local world = { score = 0, ball = { x = 0, y = 0 } }
+
+-- The starting world, then every player enters the room with syncState
+bridge.multiplayer.set_sync_state(world)
+bridge.multiplayer.create_room({ syncState = { updatesPerSecond = 5 } })
+-- bridge.multiplayer.join_room(room_id, { syncState = true })
+-- bridge.multiplayer.join_or_create_room({ maxPlayers = 2, syncState = true })
+
+-- The other players get the host's world, a new host gets the last one
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_SYNC_STATE_RECEIVED, function (_, state)
+    world = state
+end)
+
+-- Players send their actions to the host, the host changes the world
+bridge.multiplayer.on(bridge.EVENT_NAME.MULTIPLAYER_MESSAGE_RECEIVED, function (_, message)
+    if bridge.multiplayer.is_host() and message.type == "move" then
+        world.ball = message.data
+        bridge.multiplayer.set_sync_state(world)
+    end
+end)
+
+bridge.multiplayer.sync_state() -- the last world set or received
+```
+
+{% endtab %}
+
+{% tab title="Cocos Creator" %}
+
+```typescript
+bridge.multiplayer.setSyncState({ score: 0 })
+bridge.multiplayer.createRoom({ syncState: true })
+bridge.multiplayer.on(EVENT_NAME.MULTIPLAYER_SYNC_STATE_RECEIVED, (state) => { })
+bridge.multiplayer.syncState // the last world set or received
+```
+
+{% endtab %}
+{% endtabs %}
+
+* Every player enters the room with `syncState`, on every room entry. When a player without it becomes the host, its empty world replaces the game.
+* Change the world only on the host and set it again after every change: Bridge keeps a copy. The other players send their actions to the host with [messages](#send-messages); the next snapshot overwrites their own changes.
+* Set the starting world and subscribe to the event before entering the room: the first snapshot is taken right after entering, and a new host may get the world before the entry completes. The world is cleared when the player leaves the room.
+* Each snapshot is the whole world, not a change. Snapshots and messages share one limit of 64 KB a second per player: when the world does not fit, Bridge sends snapshots less often and skips the ones in between. Keep the world small; fast-paced games should send their updates with messages.
+* A world that is not a JSON object is not set, and a world larger than 64 KB stops synchronization for this player: it can no longer be the host. Bridge logs a warning.
+
+## Errors
+
+Failed requests report a code: `error.code` in Plain JS and Cocos Creator, `lastError` in Unity, `last_error` in Godot, the failure data in GameMaker and Defold, `MultiplayerLastErrorCode` in Construct 3 and `MultiplayerLastError()` in GDevelop.
+
+| Code                            | Meaning                                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `MULTIPLAYER_NOT_SUPPORTED`     | No public token, or the platform does not support multiplayer.                                    |
+| `MULTIPLAYER_ALREADY_IN_ROOM`   | The player is already in a room or entering one.                                                  |
+| `MULTIPLAYER_NOT_IN_ROOM`       | The call needs a room.                                                                            |
+| `MULTIPLAYER_ROOM_NOT_FOUND`    | No room with this code, or the room has closed.                                                   |
+| `MULTIPLAYER_ROOM_FULL`         | The room has no free seat.                                                                        |
+| `MULTIPLAYER_ROOM_CLOSED`       | The room does not accept new players.                                                             |
+| `MULTIPLAYER_INVALID_REQUEST`   | The server refused the call arguments, e.g. a wrong filter or too large properties: fix the call. |
+| `MULTIPLAYER_CONNECTION_FAILED` | The server could not be reached.                                                                  |
+
+Do not retry `joinRoom` in a loop: after `MULTIPLAYER_ROOM_NOT_FOUND`, `MULTIPLAYER_ROOM_FULL` or `MULTIPLAYER_ROOM_CLOSED`, a repeated join to the same room gets the same error at once, without a request, for 1 second, and the wait doubles with each failure in a row up to 30 seconds. Offer the player another room or `joinOrCreateRoom` instead.

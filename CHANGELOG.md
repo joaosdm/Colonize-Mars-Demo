@@ -4,6 +4,20 @@ Todas as atualizações estruturais, melhorias de física, progressão evolutiva
 
 ---
 
+## [v3.3.0] - 2026-11-19
+
+### `feat(multiplayer): integração completa do modo cooperativo com Playgama Bridge Multiplayer`
+- Criado `public/playgama-bridge-config.json` configurado com o `saas.publicToken` oficial da Playgama para empacotamento automático ao lado do `index.html` no build.
+- Instalado `@playgama/bridge` e criado `src/net/playgamaMultiplayerClient.ts` + `src/net/playgamaSync.ts` implementando verificação `isSupported`, **Partida Rápida** (`joinOrCreateRoom`), **Sala Privada** (`createRoom`), entrada por código de 8 caracteres (`joinRoom`), lista de salas (`getRooms`), seletor de regiões (`getRegions` / `setRegion`), convites (`inviteToRoom`) e entrada automática via `launchRoomId`.
+- Implementada sincronização autoritativa no Host reutilizando `coopRoomState.ts` com `syncState` (`updatesPerSecond: 4`), migração transparente de host (`MULTIPLAYER_HOST_CHANGED`) e tratamento de reconexão/queda (`MULTIPLAYER_STATE_CHANGED`, `MULTIPLAYER_ROOM_LEFT`).
+- Atualizado `TitleLobbyOverlay.tsx` e o menu do `MarsColonyHUD.tsx` com seletor de região, Partida Rápida, botão de copiar código da sala, indicador de Host e botão de convite.
+- Adicionados testes unitários em `src/net/playgamaSync.test.ts` cobrindo serialização, migração de host, orçamento `< 64 KB` e tradução de erros Playgama.
+
+### `docs(readme): criação do README.md completo do jogo`
+- Criado `README.md` documentando todas as mecânicas de Colonize Mars, controles (Desktop, Mobile e Gamepad), classes cooperativas, arquitetura Playgama Bridge Multiplayer, comandos de desenvolvimento/testes e guia de publicação.
+
+---
+
 ## [v3.2.0] - 2026-11-19
 
 ### `feat(combat-camera): arma nas costas, saque animado, visão 1ª pessoa e alternância livre [X]`

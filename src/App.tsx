@@ -80,8 +80,11 @@ import {
   resolveQualityConfig,
   shouldShowTouchControls,
 } from './sim/devicePerformance';
-import { CoopClient } from './net/coopClient';
-import { RemotePlayerState } from './net/coopProtocol';
+import {
+  PlaygamaMultiplayerClient,
+  type PlaygamaMultiplayerStatus,
+} from './net/playgamaMultiplayerClient';
+import { RemotePlayerState, RoomSummary } from './net/coopProtocol';
 
 type GameState = 'title' | 'cutscene' | 'playing' | 'paused' | 'gameover';
 type InputDeviceType = 'keyboard' | 'touch' | 'gamepad';
@@ -113,7 +116,7 @@ function readStoredTouchMode(): TouchControlsMode {
 export default function App() {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<MarsSurfaceScene | null>(null);
-  const coopClientRef = useRef<CoopClient | null>(null);
+  const coopClientRef = useRef<PlaygamaMultiplayerClient | null>(null);
 
   // Ref-backed simulation state
   const gameStateRef = useRef<GameState>('title');
@@ -177,7 +180,17 @@ export default function App() {
   const isTouchControlsVisible = shouldShowTouchControls(touchControlsMode, deviceProfile);
   const isMobileLayout = deviceProfile.isMobile || deviceProfile.isCompactScreen || isTouchControlsVisible;
 
-  // Co-op & Event Banner States
+  // Co-op (Playgama Bridge) & Event Banner States
+  const [playgamaStatus, setPlaygamaStatus] = useState<PlaygamaMultiplayerStatus>({
+    isInitialized: false,
+    isSupported: false,
+    isInviteSupported: false,
+    state: 'disconnected',
+    isHost: false,
+    region: null,
+    regions: [],
+    launchRoomId: null,
+  });
   const [coopRoomCode, setCoopRoomCode] = useState<string | null>(null);
   const [coopPlayers, setCoopPlayers] = useState<RemotePlayerState[]>([]);
   const [coopEventBanner, setCoopEventBanner] = useState<string | null>(null);
@@ -265,6 +278,11 @@ export default function App() {
   useEffect(() => {
     document.body.dataset.gameState = gameState;
   }, [gameState]);
+
+  useEffect(() => {
+    document.body.dataset.playgamaReady = String(playgamaStatus.isInitialized);
+    document.body.dataset.playgamaSupported = String(playgamaStatus.isSupported);
+  }, [playgamaStatus.isInitialized, playgamaStatus.isSupported]);
 
   const handleToggleCameraMode = useCallback(() => {
     const scene = sceneRef.current;
@@ -871,9 +889,12 @@ export default function App() {
     setSyncedGameState('title');
   }, [setSyncedGameState, setSyncedMissionControlModal, setSyncedTechModal]);
 
-  // Cooperative WebSocket Client
+  // Playgama Bridge Multiplayer Client (Host-Authoritative 3-Player Co-op)
   useEffect(() => {
-    const client = new CoopClient({
+    const client = new PlaygamaMultiplayerClient({
+      onStatusChange: (status) => {
+        setPlaygamaStatus(status);
+      },
       onJoined: (payload) => {
         setIsConnecting(false);
         setLobbyError(null);
@@ -910,7 +931,7 @@ export default function App() {
         soundManager.playBuildComplete();
         setSyncedGameState('playing');
         showBanner(
-          `Sala ${payload.roomCode} (${payload.players.length}/3) · Classe: ${roleDef.name}`
+          `Sala Playgama ${payload.roomCode} (${payload.isHost ? 'Host' : 'Membro'} · ${roleDef.name})`
         );
       },
       onError: (msg) => {
@@ -922,6 +943,29 @@ export default function App() {
       },
       onPlayerLeft: () => {
         showBanner('Um astronauta deixou a colônia.');
+      },
+      onHostChanged: (isNowHost, hostName) => {
+        showBanner(
+          isNowHost
+            ? 'Você assumiu como Host da colônia!'
+            : `Novo Host da colônia: ${hostName}`
+        );
+      },
+      onRoomLeft: (reason) => {
+        if (!isCoopModeRef.current) return;
+        isCoopModeRef.current = false;
+        coopSelfIdRef.current = null;
+        enemiesRef.current = [];
+        boltsRef.current = [];
+        setCoopRoomCode(null);
+        setCoopPlayers([]);
+        setIsConnecting(false);
+        setSyncedGameState('title');
+        if (reason === 'connection_lost') {
+          setLobbyError('Conexão perdida com o servidor Playgama.');
+        } else if (reason === 'room_closed') {
+          setLobbyError('A sala cooperativa foi encerrada pelo servidor.');
+        }
       },
       onPlayersSnapshot: (players) => {
         coopPlayersRef.current = players;
@@ -961,27 +1005,61 @@ export default function App() {
           setSyncedGameState('gameover');
         }
       },
-      onConnectionChange: () => {},
     });
 
     coopClientRef.current = client;
+
+    // Initialize Playgama Bridge SDK & auto-join launchRoomId invite if present
+    client.initialize().then((status) => {
+      const params = new URLSearchParams(window.location.search);
+      if (
+        status.isSupported &&
+        status.launchRoomId &&
+        params.get('autostart') !== '1' &&
+        gameStateRef.current === 'title'
+      ) {
+        setIsConnecting(true);
+        client
+          .joinRoom(status.launchRoomId, 'Astronauta', selectedRoleRef.current)
+          .catch(() => {
+            setIsConnecting(false);
+          });
+      }
+    });
+
     return () => {
       client.dispose();
       coopClientRef.current = null;
     };
   }, [setSyncedGameState, showBanner]);
 
-  const handleCreateCoopRoom = useCallback(
+  const handleQuickMatchCoop = useCallback(
     async (playerName: string, roleId: AstronautRoleId) => {
       selectedRoleRef.current = roleId;
       setSelectedRole(roleId);
       setLobbyError(null);
       setIsConnecting(true);
       try {
-        await coopClientRef.current?.createRoom(playerName, threatsEnabledPref, roleId);
+        await coopClientRef.current?.joinOrCreateRoom(playerName, threatsEnabledPref, roleId);
       } catch (err) {
         setIsConnecting(false);
-        setLobbyError(err instanceof Error ? err.message : 'Erro ao criar sala.');
+        setLobbyError(err instanceof Error ? err.message : 'Erro na partida rápida Playgama.');
+      }
+    },
+    [threatsEnabledPref]
+  );
+
+  const handleCreateCoopRoom = useCallback(
+    async (playerName: string, roleId: AstronautRoleId, isVisible = false) => {
+      selectedRoleRef.current = roleId;
+      setSelectedRole(roleId);
+      setLobbyError(null);
+      setIsConnecting(true);
+      try {
+        await coopClientRef.current?.createRoom(playerName, threatsEnabledPref, roleId, isVisible);
+      } catch (err) {
+        setIsConnecting(false);
+        setLobbyError(err instanceof Error ? err.message : 'Erro ao criar sala Playgama.');
       }
     },
     [threatsEnabledPref]
@@ -997,11 +1075,27 @@ export default function App() {
         await coopClientRef.current?.joinRoom(roomCode, playerName, roleId);
       } catch (err) {
         setIsConnecting(false);
-        setLobbyError(err instanceof Error ? err.message : 'Erro ao entrar na sala.');
+        setLobbyError(err instanceof Error ? err.message : 'Erro ao entrar na sala Playgama.');
       }
     },
     []
   );
+
+  const handleFetchOpenRooms = useCallback(async (): Promise<RoomSummary[]> => {
+    return (await coopClientRef.current?.fetchOpenRooms()) || [];
+  }, []);
+
+  const handleSelectPlaygamaRegion = useCallback((regionId: string) => {
+    coopClientRef.current?.setRegion(regionId);
+  }, []);
+
+  const handleInviteToRoom = useCallback(() => {
+    coopClientRef.current?.inviteToRoom().then((ok) => {
+      if (ok) {
+        showBanner('Convite da sala compartilhado via Playgama!');
+      }
+    });
+  }, [showBanner]);
 
   // Stable callback refs for Scene construction
   const onResourceRef = useRef(handleResourceCollected);
@@ -1737,13 +1831,14 @@ export default function App() {
       {/* 1. Three.js Canvas Mount */}
       <div ref={mountRef} className="absolute inset-0 z-0 cursor-crosshair active:cursor-grabbing touch-none" />
 
-      {/* 2. Title & 3-Player Co-op Lobby */}
+      {/* 2. Title & 3-Player Co-op Lobby (Playgama Bridge) */}
       {gameState === 'title' && (
         <TitleLobbyOverlay
           isMuted={isMuted}
           threatsEnabled={threatsEnabledPref}
           selectedRole={selectedRole}
           isMobileDetected={deviceProfile.isMobile || deviceProfile.isTouchPrimary}
+          playgamaStatus={playgamaStatus}
           onSelectRole={(roleId) => {
             selectedRoleRef.current = roleId;
             setSelectedRole(roleId);
@@ -1751,8 +1846,11 @@ export default function App() {
           onToggleThreatsPref={() => setThreatsEnabledPref((v) => !v)}
           onToggleMute={handleToggleMute}
           onStartSolo={() => startSoloMission(false)}
+          onQuickMatchCoop={handleQuickMatchCoop}
           onCreateCoopRoom={handleCreateCoopRoom}
           onJoinCoopRoom={handleJoinCoopRoom}
+          onFetchOpenRooms={handleFetchOpenRooms}
+          onSelectRegion={handleSelectPlaygamaRegion}
           lobbyError={lobbyError}
           isConnecting={isConnecting}
         />
@@ -1787,6 +1885,10 @@ export default function App() {
           coopRoomCode={coopRoomCode}
           coopPlayers={coopPlayers}
           coopEventBanner={coopEventBanner}
+          isCoopHost={playgamaStatus.isHost}
+          coopConnectionState={playgamaStatus.state}
+          isInviteSupported={playgamaStatus.isInviteSupported}
+          onInviteToRoom={handleInviteToRoom}
           onToggleMute={handleToggleMute}
           onToggleThreats={handleToggleThreats}
           onToggleCameraMode={handleToggleCameraMode}

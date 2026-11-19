@@ -35,6 +35,10 @@ import {
   Video,
   LayoutGrid,
   X,
+  Share2,
+  Copy,
+  Check,
+  WifiOff,
 } from 'lucide-react';
 import { BuildingKey, ColonyState, ColonyObjective } from '../sim/marsColonyLogic';
 import { getWeaponDef } from '../sim/marsChemistry';
@@ -61,6 +65,10 @@ interface MarsColonyHUDProps {
   coopRoomCode: string | null;
   coopPlayers: RemotePlayerState[];
   coopEventBanner: string | null;
+  isCoopHost?: boolean;
+  coopConnectionState?: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+  isInviteSupported?: boolean;
+  onInviteToRoom?: () => void;
   onToggleCameraMode: () => void;
   onToggleMute: () => void;
   onToggleThreats: () => void;
@@ -83,6 +91,10 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
   coopRoomCode,
   coopPlayers,
   coopEventBanner,
+  isCoopHost = false,
+  coopConnectionState = 'disconnected',
+  isInviteSupported = false,
+  onInviteToRoom,
   onToggleCameraMode,
   onToggleMute,
   onToggleThreats,
@@ -95,6 +107,7 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
   onConsumeFood,
 }) => {
   const [systemsMenuOpen, setSystemsMenuOpen] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
 
   const isLowO2 = colonyState.oxygen < 25;
   const isNearO2 = colonyState.isNearO2Source;
@@ -326,6 +339,14 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
             </div>
           )}
 
+          {/* Reconnecting Alert (Playgama Bridge auto-reconnect state) */}
+          {coopRoomCode && coopConnectionState === 'reconnecting' && (
+            <div className="bg-amber-950/92 border border-amber-400/80 text-amber-200 text-[11px] font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5 shadow-lg">
+              <WifiOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>Reconectando à sala Playgama...</span>
+            </div>
+          )}
+
           {/* Transient Event Notification */}
           {coopEventBanner && (
             <div className="bg-emerald-950/92 border border-emerald-500/60 text-emerald-200 text-[11px] font-bold px-2.5 py-1 rounded-lg shadow-lg">
@@ -545,12 +566,49 @@ export const MarsColonyHUD: React.FC<MarsColonyHUDProps> = ({
               )}
 
               {coopRoomCode && (
-                <div className="pt-1.5 border-t border-slate-800 flex items-center justify-between text-[11px] text-cyan-300 font-bold">
-                  <span className="flex items-center gap-1">
-                    <Users className="w-3.5 h-3.5" />
-                    Sala {coopRoomCode}
-                  </span>
-                  <span>{coopPlayers.length}/3</span>
+                <div className="pt-2 border-t border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] text-cyan-300 font-bold">
+                    <span className="flex items-center gap-1 min-w-0">
+                      <Users className="w-3.5 h-3.5 shrink-0" />
+                      <span className="font-mono truncate">{coopRoomCode}</span>
+                      {isCoopHost && (
+                        <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-cyan-950 border border-cyan-500/50 text-cyan-200">
+                          Host
+                        </span>
+                      )}
+                    </span>
+                    <span className="tabular-nums shrink-0">{coopPlayers.length}/3</span>
+                  </div>
+
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(coopRoomCode).catch(() => {});
+                        setCopiedCode(true);
+                        window.setTimeout(() => setCopiedCode(false), 1800);
+                      }}
+                      className="flex-1 px-2 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-bold flex items-center justify-center gap-1 text-[11px] cursor-pointer"
+                    >
+                      {copiedCode ? (
+                        <Check className="w-3 h-3 text-emerald-400" />
+                      ) : (
+                        <Copy className="w-3 h-3" />
+                      )}
+                      <span>{copiedCode ? 'Copiado!' : 'Copiar Código'}</span>
+                    </button>
+
+                    {isInviteSupported && onInviteToRoom && (
+                      <button
+                        type="button"
+                        onClick={() => closeMenuAndRun(onInviteToRoom)}
+                        className="flex-1 px-2 py-1.5 rounded-lg bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-500/50 text-cyan-200 font-bold flex items-center justify-center gap-1 text-[11px] cursor-pointer"
+                      >
+                        <Share2 className="w-3 h-3" />
+                        <span>Convidar</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
