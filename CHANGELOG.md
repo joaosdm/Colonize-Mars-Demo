@@ -4,10 +4,19 @@ Todas as atualizações estruturais, melhorias de física, progressão evolutiva
 
 ---
 
+## [v3.3.1] - 2026-11-19
+
+### `security(config): remoção do token público versionado e geração via variável de ambiente`
+- Removido o arquivo `public/playgama-bridge-config.json` com token hardcoded e qualquer referência literal ao token na documentação (`README.md`).
+- Adicionado plugin Vite em `vite.config.ts` e rota opcional em `server.ts` para gerar `playgama-bridge-config.json` dinamicamente a partir de `VITE_PLAYGAMA_PUBLIC_TOKEN` (documentado em `.env.example` e `public/playgama-bridge-config.example.json`).
+- Endurecido `.gitignore` para bloquear `.env*`, `public/playgama-bridge-config.json`, chaves privadas (`*.pem`, `*.key`, `*.p12`) e arquivos de credenciais.
+
+---
+
 ## [v3.3.0] - 2026-11-19
 
 ### `feat(multiplayer): integração completa do modo cooperativo com Playgama Bridge Multiplayer`
-- Criado `public/playgama-bridge-config.json` configurado com o `saas.publicToken` oficial da Playgama para empacotamento automático ao lado do `index.html` no build.
+- Configurada integração com `@playgama/bridge` e geração de `playgama-bridge-config.json` ao lado do `index.html` no build.
 - Instalado `@playgama/bridge` e criado `src/net/playgamaMultiplayerClient.ts` + `src/net/playgamaSync.ts` implementando verificação `isSupported`, **Partida Rápida** (`joinOrCreateRoom`), **Sala Privada** (`createRoom`), entrada por código de 8 caracteres (`joinRoom`), lista de salas (`getRooms`), seletor de regiões (`getRegions` / `setRegion`), convites (`inviteToRoom`) e entrada automática via `launchRoomId`.
 - Implementada sincronização autoritativa no Host reutilizando `coopRoomState.ts` com `syncState` (`updatesPerSecond: 4`), migração transparente de host (`MULTIPLAYER_HOST_CHANGED`) e tratamento de reconexão/queda (`MULTIPLAYER_STATE_CHANGED`, `MULTIPLAYER_ROOM_LEFT`).
 - Atualizado `TitleLobbyOverlay.tsx` e o menu do `MarsColonyHUD.tsx` com seletor de região, Partida Rápida, botão de copiar código da sala, indicador de Host e botão de convite.

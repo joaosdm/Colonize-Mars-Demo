@@ -64,18 +64,19 @@
 
 O modo cooperativo online para até **3 jogadores** está configurado utilizando o SDK oficial **`@playgama/bridge`** (Multiplayer Relay + Sync State + Host Migration).
 
-### Configuração do Token Público
-O token SaaS configurado em [`public/playgama-bridge-config.json`](public/playgama-bridge-config.json) é carregado automaticamente na inicialização da ponte (`bridge.initialize()`):
+### Configuração do Token Público (via Variável de Ambiente)
+Por segurança em repositórios públicos, **nenhum token é versionado no código-fonte**. O arquivo `playgama-bridge-config.json` é gerado automaticamente pelo Vite em tempo de desenvolvimento e build a partir da variável de ambiente `VITE_PLAYGAMA_PUBLIC_TOKEN`:
 
-```json
-{
-  "saas": {
-    "publicToken": "cmwnurq8d0oxjm30hvt7hchzs"
-  }
-}
-```
+1. Copie `.env.example` para `.env.local` (ignorado pelo `.gitignore`):
+   ```bash
+   cp .env.example .env.local
+   ```
+2. Defina o token público do seu app Playgama em `.env.local` (ou nas variáveis secretas do seu CI/CD):
+   ```dotenv
+   VITE_PLAYGAMA_PUBLIC_TOKEN="<SEU_PUBLIC_TOKEN_PLAYGAMA>"
+   ```
 
-> Durante o `npm run build`, o Vite copia automaticamente `public/playgama-bridge-config.json` para `dist/playgama-bridge-config.json` (ao lado de `dist/index.html`), seguindo exatamente a exigência de publicação da Playgama.
+> Durante o `npm run build`, o Vite gera automaticamente `dist/playgama-bridge-config.json` (ao lado de `dist/index.html`) com o formato `{ "saas": { "publicToken": "..." } }` quando a variável está definida, ou `{}` caso contrário (permitindo jogar normalmente no modo **Solo**). Consulte [`public/playgama-bridge-config.example.json`](public/playgama-bridge-config.example.json) como referência.
 
 ### Arquitetura Multiplayer Implementada
 - **Verificação de Suporte (`isSupported`):** o lobby consulta `bridge.multiplayer.isSupported` antes de exibir os controles online.
@@ -97,7 +98,7 @@ O token SaaS configurado em [`public/playgama-bridge-config.json`](public/playga
 
 ```text
 ├── public/
-│   └── playgama-bridge-config.json   # Configuração SaaS Playgama (publicToken)
+│   └── playgama-bridge-config.example.json   # Modelo sem segredos (gerado via env no build)
 ├── src/
 │   ├── App.tsx                       # Loop 60FPS baseado em refs e orquestração geral
 │   ├── audio/
@@ -149,6 +150,6 @@ npm run build
 ---
 
 ## Publicação na Playgama
-1. Execute `npm run build` — a pasta `dist/` conterá `index.html`, os bundles otimizados e `playgama-bridge-config.json` já configurado com o `publicToken`.
+1. Configure a variável de ambiente `VITE_PLAYGAMA_PUBLIC_TOKEN` no ambiente de build (ou `.env.local`, nunca commitado) e execute `npm run build` — a pasta `dist/` conterá `index.html`, `playgama-bridge.js`, os bundles otimizados e `playgama-bridge-config.json` preenchido automaticamente.
 2. Compacte o conteúdo de `dist/` em um arquivo `.zip` (com `index.html` e `playgama-bridge-config.json` na raiz do `.zip`).
 3. Envie o pacote pelo **Playgama Developer Dashboard** com **Bridge SaaS → Multiplayer** habilitado para o projeto correspondente ao token configurado.

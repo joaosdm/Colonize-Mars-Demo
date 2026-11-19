@@ -142,6 +142,18 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
+    app.get('/playgama-bridge-config.json', (_req, res, next) => {
+      const token = (
+        process.env.PLAYGAMA_PUBLIC_TOKEN ||
+        process.env.VITE_PLAYGAMA_PUBLIC_TOKEN ||
+        ''
+      ).trim();
+      if (token) {
+        res.json({ saas: { publicToken: token } });
+        return;
+      }
+      next();
+    });
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

@@ -2,11 +2,47 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import playgamaBridge from '@playgama/bridge/vite';
 import path from 'path';
-import {defineConfig} from 'vite';
+import {defineConfig, loadEnv, type Plugin} from 'vite';
 
-export default defineConfig(() => {
+function playgamaConfigFromEnv(publicToken: string): Plugin {
+  const payload = publicToken
+    ? JSON.stringify({ saas: { publicToken } }, null, 2) + '\n'
+    : '{}\n';
+
   return {
-    plugins: [playgamaBridge({ mode: 'local' }), react(), tailwindcss()],
+    name: 'playgama-bridge-env-config',
+    configureServer(server) {
+      server.middlewares.use('/playgama-bridge-config.json', (_req, res) => {
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.end(payload);
+      });
+    },
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'playgama-bridge-config.json',
+        source: payload,
+      });
+    },
+  };
+}
+
+export default defineConfig(({mode}) => {
+  const env = loadEnv(mode, process.cwd(), '');
+  const playgamaPublicToken = (
+    env.VITE_PLAYGAMA_PUBLIC_TOKEN ||
+    env.PLAYGAMA_PUBLIC_TOKEN ||
+    ''
+  ).trim();
+
+  return {
+    plugins: [
+      playgamaBridge({ mode: 'local' }),
+      playgamaConfigFromEnv(playgamaPublicToken),
+      react(),
+      tailwindcss(),
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

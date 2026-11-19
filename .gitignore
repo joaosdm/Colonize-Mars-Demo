@@ -4,5 +4,19 @@ dist/
 coverage/
 .DS_Store
 *.log
+
+# Environment & local secrets
 .env*
 !.env.example
+.secrets/
+
+# Local Playgama config (generated at build time from VITE_PLAYGAMA_PUBLIC_TOKEN)
+public/playgama-bridge-config.json
+
+# Private keys, certificates & service credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*service-account*.json
