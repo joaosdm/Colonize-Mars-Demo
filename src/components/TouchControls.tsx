@@ -139,9 +139,6 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
             <div className="w-3.5 h-3.5 rounded-full bg-white/85" />
           </div>
         </div>
-        <div className="text-[9px] font-bold text-center text-slate-300/80 mt-1 tracking-wider uppercase">
-          Arraste tela p/ câmera
-        </div>
       </div>
 
       {/* Right: Ergonomic Action Cluster (Excavate, Cycle Weapon, Shoot, Jump/Jet, Primary Action) */}

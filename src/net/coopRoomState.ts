@@ -38,6 +38,7 @@ import {
   createPlasmaBolt,
   stepEnemiesAndCombat,
 } from '../sim/marsEnemies';
+import { applyBuildingCombatDamage } from '../sim/buildingDurability';
 import { MAX_COOP_PLAYERS, RemotePlayerState } from './coopProtocol';
 
 export const PLAYER_SUIT_PALETTES: Array<{ namePrefix: string; colorHex: string; defaultRole: AstronautRoleId }> = [
@@ -465,14 +466,18 @@ export function tickCoopRoomCombat(room: CoopRoom, nowMs: number): boolean {
     stateChanged = true;
   }
 
-  const dmgEntries = Object.entries(step.result.buildingDamage) as Array<[BuildingKey, number]>;
-  if (dmgEntries.length > 0) {
-    const nextHealth = { ...room.colonyState.buildingHealth };
-    for (const [k, dmg] of dmgEntries) {
-      nextHealth[k] = Math.max(10, nextHealth[k] - dmg);
+  const hitKeys = Object.keys(step.result.buildingHits) as BuildingKey[];
+  if (hitKeys.length > 0) {
+    const activeRoles = Array.from(room.players.values()).map((p) => p.roleId);
+    const dmgRes = applyBuildingCombatDamage(
+      room.colonyState,
+      step.result.buildingHits,
+      activeRoles.length > 0 ? activeRoles : ['engineer']
+    );
+    room.colonyState = dmgRes.state;
+    if (dmgRes.damagedKeys.length > 0 || dmgRes.destroyedKeys.length > 0) {
+      stateChanged = true;
     }
-    room.colonyState = { ...room.colonyState, buildingHealth: nextHealth };
-    stateChanged = true;
   }
 
   return stateChanged || room.enemies.length > 0 || room.bolts.length > 0;

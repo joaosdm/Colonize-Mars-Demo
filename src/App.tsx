@@ -7,7 +7,11 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
-import { MarsSurfaceScene, InteractiveTriggerZone } from './graphics/MarsSurfaceScene';
+import {
+  MarsSurfaceScene,
+  InteractiveTriggerZone,
+  CameraMode,
+} from './graphics/MarsSurfaceScene';
 import type { ResourceNodeKind } from './graphics/colonyStructures';
 import { MarsColonyHUD } from './components/MarsColonyHUD';
 import { TouchControls } from './components/TouchControls';
@@ -52,10 +56,13 @@ import {
   MarsEnemy,
   PlasmaBolt,
   EnemyKind,
+  ENEMY_ARCHETYPES,
   createEnemy,
   createWeaponVolley,
   stepEnemiesAndCombat,
 } from './sim/marsEnemies';
+import { applyBuildingCombatDamage } from './sim/buildingDurability';
+import { BUILDING_DISPLAY_NAMES } from './sim/marsWeather';
 import { getWeaponDef, WeaponId } from './sim/marsChemistry';
 import type { CropTypeId } from './sim/marsWorld';
 import {
@@ -150,6 +157,7 @@ export default function App() {
   const [isWorkshopOpen, setIsWorkshopOpen] = useState<boolean>(false);
   const [workshopTab, setWorkshopTab] = useState<WorkshopTab>('refinery');
   const [isOrbitalOpen, setIsOrbitalOpen] = useState<boolean>(false);
+  const [cameraMode, setCameraMode] = useState<CameraMode>('third-person');
   const [activeInputDevice, setActiveInputDevice] = useState<InputDeviceType>('keyboard');
   const [deviceProfile, setDeviceProfile] = useState<DeviceProfile>(() => readBrowserDeviceProfile());
   const [qualityPreset, setQualityPreset] = useState<QualityPreset>(() => readStoredQualityPreset());
@@ -249,6 +257,26 @@ export default function App() {
       setCoopEventBanner((cur) => (cur === text ? null : cur));
     }, 3400);
   }, []);
+
+  useEffect(() => {
+    document.body.dataset.cameraMode = cameraMode;
+  }, [cameraMode]);
+
+  useEffect(() => {
+    document.body.dataset.gameState = gameState;
+  }, [gameState]);
+
+  const handleToggleCameraMode = useCallback(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    const next = scene.toggleCameraMode();
+    soundManager.playClick();
+    showBanner(
+      next === 'first-person'
+        ? 'Visão 1ª Pessoa (Combate) · [X] alternar'
+        : 'Visão Normal (3ª Pessoa) · [X] alternar'
+    );
+  }, [showBanner]);
 
   const currentObjective =
     hudColonyState.stage < INITIAL_OBJECTIVES.length
@@ -532,8 +560,14 @@ export default function App() {
     const dir =
       customDirX !== undefined && customDirZ !== undefined
         ? { dirX: customDirX, dirZ: customDirZ }
+        : scene.cameraMode === 'first-person'
+        ? scene.getCameraForwardDirection()
         : scene.getSmartAimDirection(enemiesRef.current);
 
+    const { drewFromBack } = scene.triggerWeaponDrawAndFire(weaponDef.id, dir);
+    if (drewFromBack) {
+      soundManager.playWeaponDraw();
+    }
     soundManager.playWeaponFire(weaponDef.id);
 
     if (isCoopModeRef.current && coopClientRef.current) {
@@ -618,6 +652,7 @@ export default function App() {
       if (res.equipped) {
         soundManager.playClick();
         colonyStateRef.current = res.state;
+        sceneRef.current?.setEquippedWeapon(weaponId);
         forceHudSyncRef.current = true;
         setHudColonyState(res.state);
         showBanner(`Arma equipada: ${getWeaponDef(weaponId).name}`);
@@ -795,6 +830,7 @@ export default function App() {
       colonyStateRef.current = createInitialColonyState(threatsEnabledPref, [roleDef.id]);
       setHudColonyState(colonyStateRef.current);
       setIsVictory(false);
+      setCameraMode('third-person');
       setSyncedTechModal(false);
       setSyncedMissionControlModal(false);
 
@@ -828,6 +864,8 @@ export default function App() {
     setCoopRoomCode(null);
     setCoopPlayers([]);
     setIsVictory(false);
+    setCameraMode('third-person');
+    sceneRef.current?.setCameraMode('third-person', false);
     setSyncedTechModal(false);
     setSyncedMissionControlModal(false);
     setSyncedGameState('title');
@@ -976,6 +1014,7 @@ export default function App() {
   const onOpenOrbitalRef = useRef(() => setSyncedOrbitalModal(true));
   const onCanvasShootRef = useRef(firePlasmaPulse);
   onCanvasShootRef.current = firePlasmaPulse;
+  const onCameraModeChangeRef = useRef<(mode: CameraMode) => void>((mode) => setCameraMode(mode));
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -997,6 +1036,7 @@ export default function App() {
       onOpenWorkshop: () => onOpenWorkshopRef.current(),
       onOpenOrbital: () => onOpenOrbitalRef.current(),
       onCanvasShoot: (dx, dz) => onCanvasShootRef.current(dx, dz),
+      onCameraModeChange: (mode) => onCameraModeChangeRef.current(mode),
     });
     sceneRef.current = scene;
     const syncedQuality = resolveQualityConfig(storedPreset, initialProfile, scene.isSoftwareGl);
@@ -1048,6 +1088,27 @@ export default function App() {
         };
         colonyStateRef.current = forceTriggerDustStorm(seeded, [selectedRoleRef.current]);
         setHudColonyState(colonyStateRef.current);
+      }
+      if (params.get('fire') === '1') {
+        const seededFire: ColonyState = {
+          ...colonyStateRef.current,
+          stage: Math.max(2, colonyStateRef.current.stage),
+          buildings: {
+            ...colonyStateRef.current.buildings,
+            moxie: true,
+            solarPanels: true,
+          },
+          buildingHealth: {
+            ...colonyStateRef.current.buildingHealth,
+            moxie: 72,
+            solarPanels: 24,
+          },
+        };
+        colonyStateRef.current = seededFire;
+        setHudColonyState(seededFire);
+        enemiesRef.current = [createEnemy('brute', 10.5, 4.5, 'enemy-demo-brute')];
+        setActiveEnemiesCount(1);
+        scene.cameraYaw = -1.05;
       }
     }
 
@@ -1183,6 +1244,9 @@ export default function App() {
         if (e.code === 'KeyF') {
           firePlasmaPulse();
         }
+        if (e.code === 'KeyX') {
+          handleToggleCameraMode();
+        }
       }
 
       updateKeyboardVector();
@@ -1222,6 +1286,7 @@ export default function App() {
     handleExcavateCrater,
     handleInstantAction,
     handleSkipCutscene,
+    handleToggleCameraMode,
     handleToggleMute,
     setSyncedGameState,
     setSyncedMissionControlModal,
@@ -1494,14 +1559,7 @@ export default function App() {
             );
             enemiesRef.current.push(newEnemy);
             soundManager.playAlertWarning();
-            const label =
-              kind === 'brute'
-                ? 'Colosso de Basalto'
-                : kind === 'drone'
-                ? 'Drone Pirata'
-                : kind === 'stalker'
-                ? 'Perseguidor Ácido'
-                : 'Rastejador de Sílica';
+            const label = ENEMY_ARCHETYPES[kind].displayName;
             showBanner(`Alerta de Invasão: ${label} detectado!`);
             enemySpawnTimerRef.current = Math.max(12, 22 - workingState.stage);
           }
@@ -1527,13 +1585,28 @@ export default function App() {
               };
             }
 
-            const damagedKeys = Object.keys(step.result.buildingDamage) as BuildingKey[];
-            if (damagedKeys.length > 0) {
-              const nextHp = { ...workingState.buildingHealth };
-              for (const k of damagedKeys) {
-                nextHp[k] = Math.max(10, nextHp[k] - (step.result.buildingDamage[k] || 0));
+            if (Object.keys(step.result.buildingHits).length > 0) {
+              const dmgRes = applyBuildingCombatDamage(
+                workingState,
+                step.result.buildingHits,
+                [activeRoleId]
+              );
+              workingState = dmgRes.state;
+              for (const criticalKey of dmgRes.newlyCriticalKeys) {
+                soundManager.playAlertWarning();
+                forceHudSyncRef.current = true;
+                showBanner(
+                  `CRÍTICO: ${BUILDING_DISPLAY_NAMES[criticalKey]} em chamas! Repare [E]!`
+                );
               }
-              workingState = { ...workingState, buildingHealth: nextHp };
+              for (const destroyedKey of dmgRes.destroyedKeys) {
+                scene.triggerBuildingExplosion(destroyedKey);
+                soundManager.playBuildingExplosion();
+                forceHudSyncRef.current = true;
+                showBanner(
+                  `EXPLOSÃO: ${BUILDING_DISPLAY_NAMES[destroyedKey]} destruído! Reconstrua a estrutura!`
+                );
+              }
             }
 
             if (step.result.kills.length > 0) {
@@ -1709,12 +1782,14 @@ export default function App() {
           activeEnemiesCount={activeEnemiesCount}
           isMuted={isMuted}
           isMobileLayout={isMobileLayout}
+          cameraMode={cameraMode}
           activeInputDevice={activeInputDevice}
           coopRoomCode={coopRoomCode}
           coopPlayers={coopPlayers}
           coopEventBanner={coopEventBanner}
           onToggleMute={handleToggleMute}
           onToggleThreats={handleToggleThreats}
+          onToggleCameraMode={handleToggleCameraMode}
           onPause={() => setSyncedGameState('paused')}
           onOpenTechTree={() => setSyncedTechModal(true)}
           onOpenMissionControl={() => setSyncedMissionControlModal(true)}

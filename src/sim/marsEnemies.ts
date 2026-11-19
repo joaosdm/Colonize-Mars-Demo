@@ -4,10 +4,70 @@
  */
 
 import { BuildingKey, ColonyState } from './marsColonyLogic';
+import type { BuildingDamageHit } from './buildingDurability';
 import { getWeaponDef, WeaponId } from './marsChemistry';
 import { groundHeightAt } from './marsPhysics';
 
 export type EnemyKind = 'crawler' | 'drone' | 'brute' | 'stalker';
+
+export interface EnemyArchetypeSpec {
+  kind: EnemyKind;
+  displayName: string;
+  maxHp: number;
+  speed: number;
+  radius: number;
+  attackPower: number; // Damage vs Astronaut O2
+  buildingDamage: number; // Raw siege damage vs Colony Structures
+  armorPenetration: number; // Bypasses portion of building armor
+  attackCadenceSec: number;
+}
+
+export const ENEMY_ARCHETYPES: Record<EnemyKind, EnemyArchetypeSpec> = {
+  crawler: {
+    kind: 'crawler',
+    displayName: 'Rastejador de Sílica',
+    maxHp: 75,
+    speed: 4.4,
+    radius: 0.75,
+    attackPower: 6,
+    buildingDamage: 11,
+    armorPenetration: 1,
+    attackCadenceSec: 1.3,
+  },
+  drone: {
+    kind: 'drone',
+    displayName: 'Drone Pirata',
+    maxHp: 115,
+    speed: 5.1,
+    radius: 0.82,
+    attackPower: 8,
+    buildingDamage: 15,
+    armorPenetration: 3,
+    attackCadenceSec: 2.0,
+  },
+  stalker: {
+    kind: 'stalker',
+    displayName: 'Perseguidor Ácido',
+    maxHp: 135,
+    speed: 5.8,
+    radius: 0.78,
+    attackPower: 11,
+    buildingDamage: 19,
+    armorPenetration: 5,
+    attackCadenceSec: 1.7,
+  },
+  brute: {
+    kind: 'brute',
+    displayName: 'Colosso de Basalto',
+    maxHp: 280,
+    speed: 3.1,
+    radius: 1.2,
+    attackPower: 16,
+    buildingDamage: 38,
+    armorPenetration: 8,
+    attackCadenceSec: 1.75,
+  },
+};
 
 export interface MarsEnemy {
   id: string;
@@ -20,6 +80,9 @@ export interface MarsEnemy {
   yaw: number;
   hp: number;
   maxHp: number;
+  attackPower: number;
+  buildingDamage: number;
+  armorPenetration: number;
   speed: number;
   radius: number;
   attackCooldown: number;
@@ -36,6 +99,8 @@ export interface PlasmaBolt {
   vx: number;
   vz: number;
   damage: number;
+  buildingDamage?: number;
+  armorPenetration?: number;
   life: number;
   fromTurret: boolean;
   fromEnemy?: boolean;
@@ -80,81 +145,25 @@ export function createEnemy(
 ): MarsEnemy {
   const gy = groundHeightAt(x, z);
   const strafeDir = seedId.charCodeAt(seedId.length - 1) % 2 === 0 ? 1 : -1;
+  const spec = ENEMY_ARCHETYPES[kind] || ENEMY_ARCHETYPES.crawler;
 
-  if (kind === 'drone') {
-    return {
-      id: seedId,
-      kind,
-      x,
-      y: gy + 1.65,
-      z,
-      vx: 0,
-      vz: 0,
-      yaw: 0,
-      hp: 88,
-      maxHp: 88,
-      speed: 5.1,
-      radius: 0.82,
-      attackCooldown: 1.1,
-      hitFlashTimer: 0,
-      strafeDir,
-      targetBuilding: null,
-    };
-  }
-  if (kind === 'brute') {
-    return {
-      id: seedId,
-      kind,
-      x,
-      y: gy,
-      z,
-      vx: 0,
-      vz: 0,
-      yaw: 0,
-      hp: 185,
-      maxHp: 185,
-      speed: 3.1,
-      radius: 1.2,
-      attackCooldown: 1.2,
-      hitFlashTimer: 0,
-      strafeDir,
-      targetBuilding: null,
-    };
-  }
-  if (kind === 'stalker') {
-    return {
-      id: seedId,
-      kind,
-      x,
-      y: gy,
-      z,
-      vx: 0,
-      vz: 0,
-      yaw: 0,
-      hp: 95,
-      maxHp: 95,
-      speed: 5.8,
-      radius: 0.78,
-      attackCooldown: 1.0,
-      hitFlashTimer: 0,
-      strafeDir,
-      targetBuilding: null,
-    };
-  }
   return {
     id: seedId,
-    kind: 'crawler',
+    kind: spec.kind,
     x,
-    y: gy,
+    y: spec.kind === 'drone' ? gy + 1.65 : gy,
     z,
     vx: 0,
     vz: 0,
     yaw: 0,
-    hp: 60,
-    maxHp: 60,
-    speed: 4.4,
-    radius: 0.75,
-    attackCooldown: 0.85,
+    hp: spec.maxHp,
+    maxHp: spec.maxHp,
+    attackPower: spec.attackPower,
+    buildingDamage: spec.buildingDamage,
+    armorPenetration: spec.armorPenetration,
+    speed: spec.speed,
+    radius: spec.radius,
+    attackCooldown: spec.attackCadenceSec * 0.75,
     hitFlashTimer: 0,
     strafeDir,
     targetBuilding: null,
@@ -251,7 +260,9 @@ function createEnemyProjectile(
     z: enemy.z,
     vx: (dx / len) * speed,
     vz: (dz / len) * speed,
-    damage: enemy.kind === 'stalker' ? 8 : 6,
+    damage: enemy.attackPower,
+    buildingDamage: enemy.buildingDamage,
+    armorPenetration: enemy.armorPenetration,
     life: 1.5,
     fromTurret: false,
     fromEnemy: true,
@@ -265,12 +276,13 @@ function chooseTargetCoords(
   playerPos: { x: number; z: number }
 ): { x: number; z: number; buildingKey: BuildingKey | null } {
   const builtKeys = (Object.keys(colonyState.buildings) as BuildingKey[]).filter(
-    (k) => colonyState.buildings[k] && colonyState.buildingHealth[k] > 15
+    (k) => colonyState.buildings[k] && colonyState.buildingHealth[k] > 0
   );
 
-  // Stalkers prefer hunting the astronaut; drones/crawlers engage within 13.5m
+  // Stalkers prefer hunting the astronaut; Brutes prioritize besieging structures
   const distPlayer = Math.hypot(playerPos.x - enemy.x, playerPos.z - enemy.z);
-  const aggroRange = enemy.kind === 'stalker' ? 22.0 : 13.5;
+  const aggroRange =
+    enemy.kind === 'stalker' ? 22.0 : enemy.kind === 'brute' ? 8.5 : 13.5;
   if (distPlayer < aggroRange || builtKeys.length === 0) {
     return { x: playerPos.x, z: playerPos.z, buildingKey: null };
   }
@@ -278,7 +290,7 @@ function chooseTargetCoords(
   if (
     enemy.targetBuilding &&
     colonyState.buildings[enemy.targetBuilding] &&
-    colonyState.buildingHealth[enemy.targetBuilding] > 15
+    colonyState.buildingHealth[enemy.targetBuilding] > 0
   ) {
     const c = BUILDING_COORDS[enemy.targetBuilding];
     return { x: c.x, z: c.z, buildingKey: enemy.targetBuilding };
@@ -307,6 +319,7 @@ export interface CombatStepResult {
   kills: EnemyRewardDrop[];
   playerO2Damage: number;
   buildingDamage: Partial<Record<BuildingKey, number>>;
+  buildingHits: Partial<Record<BuildingKey, BuildingDamageHit[]>>;
   turretFiredAt: { x: number; y: number; z: number } | null;
 }
 
@@ -323,8 +336,17 @@ export function stepEnemiesAndCombat(params: {
   const enemies = params.enemies.map((e) => ({ ...e }));
   const kills: EnemyRewardDrop[] = [];
   const buildingDamage: Partial<Record<BuildingKey, number>> = {};
+  const buildingHits: Partial<Record<BuildingKey, BuildingDamageHit[]>> = {};
   let playerO2Damage = 0;
   let turretFiredAt: { x: number; y: number; z: number } | null = null;
+
+  const recordBuildingHit = (key: BuildingKey, rawDamage: number, armorPenetration = 0) => {
+    buildingDamage[key] = (buildingDamage[key] || 0) + rawDamage;
+    if (!buildingHits[key]) {
+      buildingHits[key] = [];
+    }
+    buildingHits[key]!.push({ rawDamage, armorPenetration });
+  };
 
   // 1. Automated Defense Turret Logic at (10, -2)
   let nextTurretCooldown = Math.max(0, params.turretCooldown - dt);
@@ -379,7 +401,7 @@ export function stepEnemiesAndCombat(params: {
         if (!params.colonyState.buildings[k]) continue;
         const c = BUILDING_COORDS[k];
         if (Math.hypot(nb.x - c.x, nb.z - c.z) <= 1.8) {
-          buildingDamage[k] = (buildingDamage[k] || 0) + nb.damage;
+          recordBuildingHit(k, nb.buildingDamage ?? nb.damage, nb.armorPenetration ?? 0);
           hitBuilding = true;
           break;
         }
@@ -446,6 +468,8 @@ export function stepEnemiesAndCombat(params: {
     const dirZ = dz / dist;
     enemy.yaw = Math.atan2(dirX, dirZ);
 
+    const spec = ENEMY_ARCHETYPES[enemy.kind] || ENEMY_ARCHETYPES.crawler;
+
     // Tactical ranged strafing for Drones & Stalkers
     if (enemy.kind === 'drone' || enemy.kind === 'stalker') {
       const preferredRange = enemy.kind === 'drone' ? 9.5 : 8.0;
@@ -467,7 +491,7 @@ export function stepEnemiesAndCombat(params: {
 
       // Ranged plasma/acid fire
       if (dist <= preferredRange + 5.5 && enemy.attackCooldown <= 0) {
-        enemy.attackCooldown = enemy.kind === 'stalker' ? 1.75 : 2.1;
+        enemy.attackCooldown = spec.attackCadenceSec;
         nextBolts.push(createEnemyProjectile(enemy, target.x, target.z));
       }
     } else {
@@ -486,12 +510,15 @@ export function stepEnemiesAndCombat(params: {
         enemy.vx = 0;
         enemy.vz = 0;
         if (enemy.attackCooldown <= 0) {
-          enemy.attackCooldown = enemy.kind === 'brute' ? 1.65 : 1.25;
+          enemy.attackCooldown = spec.attackCadenceSec;
           if (target.buildingKey) {
-            const dmg = enemy.kind === 'brute' ? 15 : 8;
-            buildingDamage[target.buildingKey] = (buildingDamage[target.buildingKey] || 0) + dmg;
+            recordBuildingHit(
+              target.buildingKey,
+              enemy.buildingDamage,
+              enemy.armorPenetration
+            );
           } else {
-            playerO2Damage += enemy.kind === 'brute' ? 12 : 6;
+            playerO2Damage += enemy.attackPower;
           }
         }
       }
@@ -510,6 +537,7 @@ export function stepEnemiesAndCombat(params: {
       kills,
       playerO2Damage,
       buildingDamage,
+      buildingHits,
       turretFiredAt,
     },
     nextTurretCooldown,

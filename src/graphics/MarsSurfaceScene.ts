@@ -12,7 +12,12 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { createMarsTerrain, MarsTerrainEnvironment } from './marsTerrain';
-import { createAstronaut, AstronautCharacter } from './astronautModel';
+import {
+  createAstronaut,
+  createSciFiWeaponMesh,
+  AstronautCharacter,
+  SciFiWeaponVisual,
+} from './astronautModel';
 import {
   createColonyStructures,
   ColonyStructures,
@@ -26,6 +31,11 @@ import {
   CONSTRUCTION_CONFIGS,
   canStartConstruction,
 } from '../sim/marsColonyLogic';
+import {
+  BUILDING_FIRE_THRESHOLD_PCT,
+  getBuildingDurabilitySpec,
+} from '../sim/buildingDurability';
+import type { WeaponId } from '../sim/marsChemistry';
 import { ExcavatedCrater, getCropDef } from '../sim/marsWorld';
 import {
   BUILDING_COORDS,
@@ -45,6 +55,8 @@ import {
 } from '../sim/astronautRoles';
 import { RemotePlayerState } from '../net/coopProtocol';
 import type { QualityConfig } from '../sim/devicePerformance';
+
+export type CameraMode = 'third-person' | 'first-person';
 
 export interface InteractiveTriggerZone {
   id: string;
@@ -77,6 +89,7 @@ export interface MarsSceneOptions {
   onOpenWorkshop?: () => void;
   onOpenOrbital?: () => void;
   onCanvasShoot?: (dirX: number, dirZ: number) => void;
+  onCameraModeChange?: (mode: CameraMode) => void;
 }
 
 interface RemoteAvatarEntry {
@@ -169,10 +182,23 @@ export class MarsSurfaceScene {
   private cutsceneTime: number = 0;
   private cutsceneDuration: number = 4.6;
 
-  // Camera Orbit State, Multi-Touch Pinch Zoom & Click Aiming
+  // Camera Mode (Third-Person Orbit vs First-Person Combat), Weapon Draw & FPS Viewmodel
+  public cameraMode: CameraMode = 'third-person';
   public cameraYaw: number = 0;
   public cameraPitch: number = 0.46;
+  public fpPitch: number = 0;
   public cameraDistance: number = 9.0;
+  private cameraFpBlend: number = 0; // 0 = 3rd-person, 1 = 1st-person
+  private cameraShakeTrauma: number = 0;
+  private weaponDrawBlend: number = 0; // 0 = holstered on back, 1 = drawn in hand/FPS
+  private weaponDrawTarget: number = 0;
+  private weaponRecoil: number = 0;
+  private muzzleFlashTimer: number = 0;
+  private equippedWeaponId: WeaponId = 'pulse-pistol';
+  private fpWeaponRoot: THREE.Group;
+  private fpWeaponVisual: SciFiWeaponVisual | null = null;
+  private destroyedBurnTimers: Partial<Record<BuildingKey, number>> = {};
+
   private cameraLookTarget = new THREE.Vector3();
   private cameraDesiredPos = new THREE.Vector3();
   private isDraggingCamera: boolean = false;
@@ -214,6 +240,7 @@ export class MarsSurfaceScene {
   private onOpenWorkshop?: () => void;
   private onOpenOrbital?: () => void;
   private onCanvasShoot?: (dirX: number, dirZ: number) => void;
+  private onCameraModeChange?: (mode: CameraMode) => void;
 
   private frameId: number = 0;
   private isDisposed: boolean = false;
@@ -229,6 +256,7 @@ export class MarsSurfaceScene {
     this.onOpenWorkshop = options.onOpenWorkshop;
     this.onOpenOrbital = options.onOpenOrbital;
     this.onCanvasShoot = options.onCanvasShoot;
+    this.onCameraModeChange = options.onCameraModeChange;
     (window as unknown as { __marsScene: MarsSurfaceScene }).__marsScene = this;
 
     // 1. Software WebGL probe
@@ -277,8 +305,16 @@ export class MarsSurfaceScene {
     const aspect = width / Math.max(1, height);
     const fov = aspect < 0.85 ? 62 : 54;
     const farClip = quality?.farClip ?? 460;
-    this.camera = new THREE.PerspectiveCamera(fov, aspect, 0.15, farClip);
+    this.camera = new THREE.PerspectiveCamera(fov, aspect, 0.08, farClip);
     this.camera.position.set(0, 12, 26);
+
+    // Mount camera in scene + attach First-Person 3D Weapon Viewmodel
+    this.fpWeaponRoot = new THREE.Group();
+    this.fpWeaponRoot.name = 'FirstPerson_Weapon_Viewmodel';
+    this.fpWeaponRoot.visible = false;
+    this.camera.add(this.fpWeaponRoot);
+    this.scene.add(this.camera);
+    this.rebuildFirstPersonWeapon(this.equippedWeaponId);
 
     // 4. Studio Reflection Environment (optional on low-end mobile GPUs)
     const pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -357,6 +393,11 @@ export class MarsSurfaceScene {
     Object.values(this.structures.damageRings).forEach((ring) => {
       this.scene.add(ring);
     });
+
+    Object.values(this.structures.fireRigs).forEach((fireRig) => {
+      this.scene.add(fireRig.group);
+    });
+    this.scene.add(this.structures.explosionRig.group);
 
     this.structures.resources.forEach((res) => {
       this.scene.add(res.mesh);
@@ -492,7 +533,11 @@ export class MarsSurfaceScene {
     const sensX = e.pointerType === 'touch' ? 0.0068 : 0.0055;
     const sensY = e.pointerType === 'touch' ? 0.0048 : 0.004;
     this.cameraYaw -= dx * sensX;
-    this.cameraPitch = Math.max(0.2, Math.min(1.05, this.cameraPitch + dy * sensY));
+    if (this.cameraMode === 'first-person') {
+      this.fpPitch = Math.max(-0.52, Math.min(0.52, this.fpPitch - dy * sensY));
+    } else {
+      this.cameraPitch = Math.max(0.2, Math.min(1.05, this.cameraPitch + dy * sensY));
+    }
   };
 
   private onPointerUp = (e: PointerEvent) => {
@@ -505,7 +550,7 @@ export class MarsSurfaceScene {
 
     if (e.pointerId !== this.activeCameraPointerId) return;
 
-    // On desktop mouse: quick left-click shoots toward cursor; on touch: dedicated PULSO button fires, tap-to-shoot only if very deliberate short tap on canvas
+    // On desktop mouse: quick left-click shoots (in FPS shoots straight through reticle; in 3P aims toward click)
     if (
       this.isDraggingCamera &&
       this.pointerButton === 0 &&
@@ -514,7 +559,10 @@ export class MarsSurfaceScene {
       !this.isCutscene &&
       e.target === this.renderer.domElement
     ) {
-      const aim = this.getAimDirectionFromClient(e.clientX, e.clientY);
+      const aim =
+        this.cameraMode === 'first-person'
+          ? this.getCameraForwardDirection()
+          : this.getAimDirectionFromClient(e.clientX, e.clientY);
       this.onCanvasShoot?.(aim.dirX, aim.dirZ);
     }
     this.isDraggingCamera = false;
@@ -582,8 +630,106 @@ export class MarsSurfaceScene {
   }
 
   public getFacingDirection(): { dirX: number; dirZ: number } {
+    if (this.cameraMode === 'first-person') {
+      return this.getCameraForwardDirection();
+    }
     const yaw = this.physicsBody.yaw;
     return { dirX: Math.sin(yaw), dirZ: Math.cos(yaw) };
+  }
+
+  public getCameraForwardDirection(): { dirX: number; dirZ: number } {
+    return { dirX: -Math.sin(this.cameraYaw), dirZ: -Math.cos(this.cameraYaw) };
+  }
+
+  private rebuildFirstPersonWeapon(weaponId: WeaponId) {
+    while (this.fpWeaponRoot.children.length > 0) {
+      this.fpWeaponRoot.remove(this.fpWeaponRoot.children[0]);
+    }
+    const vis = createSciFiWeaponMesh(weaponId);
+    // Weapon geometry points along +Z; rotate Y by PI so barrel points forward along camera -Z
+    vis.group.rotation.set(0.03, Math.PI - 0.06, 0);
+    vis.group.scale.setScalar(0.88);
+    this.fpWeaponRoot.add(vis.group);
+    this.fpWeaponVisual = vis;
+  }
+
+  public setEquippedWeapon(weaponId: WeaponId) {
+    if (this.equippedWeaponId === weaponId) return;
+    this.equippedWeaponId = weaponId;
+    this.astronaut.setEquippedWeapon(weaponId);
+    this.rebuildFirstPersonWeapon(weaponId);
+  }
+
+  public setCameraMode(mode: CameraMode, notify = true) {
+    if (this.cameraMode === mode) return;
+    this.cameraMode = mode;
+    if (mode === 'first-person') {
+      this.weaponDrawTarget = 1;
+      this.fpPitch = 0;
+    } else {
+      this.weaponDrawTarget = 0;
+      this.astronaut.bodyMeshGroup.visible = true;
+      this.fpWeaponRoot.visible = false;
+    }
+    if (notify) {
+      this.onCameraModeChange?.(mode);
+    }
+  }
+
+  public toggleCameraMode(): CameraMode {
+    const next: CameraMode =
+      this.cameraMode === 'first-person' ? 'third-person' : 'first-person';
+    this.setCameraMode(next, true);
+    return next;
+  }
+
+  /**
+   * Triggers over-the-shoulder weapon draw animation, recoil + muzzle flash,
+   * and smoothly transitions into First-Person aim view when firing.
+   */
+  public triggerWeaponDrawAndFire(
+    weaponId: WeaponId,
+    aimDir?: { dirX: number; dirZ: number }
+  ): { drewFromBack: boolean } {
+    this.setEquippedWeapon(weaponId);
+    const drewFromBack = this.weaponDrawTarget < 0.5 || this.cameraMode !== 'first-person';
+
+    if (aimDir && this.cameraMode !== 'first-person') {
+      // Align camera & astronaut toward target before zooming into 1st-person
+      this.cameraYaw = Math.atan2(-aimDir.dirX, -aimDir.dirZ);
+      this.physicsBody.yaw = Math.atan2(aimDir.dirX, aimDir.dirZ);
+    }
+
+    this.weaponDrawTarget = 1;
+    this.weaponRecoil = 1.0;
+    this.muzzleFlashTimer = 0.08;
+
+    if (this.cameraMode !== 'first-person') {
+      this.setCameraMode('first-person', true);
+    }
+    return { drewFromBack };
+  }
+
+  /**
+   * Triggers a 3D fiery explosion + shockwave + lingering burn flames on a destroyed building pad
+   */
+  public triggerBuildingExplosion(key: BuildingKey) {
+    const c = BUILDING_COORDS[key];
+    if (!c) return;
+    const gy = groundHeightAt(c.x, c.z, this.activeCraters);
+    const rig = this.structures.explosionRig;
+    rig.group.position.set(c.x, gy, c.z);
+    rig.group.visible = true;
+    rig.activeTimer = rig.durationSec;
+    rig.flashSphere.scale.setScalar(1.0);
+    rig.shockRing.scale.setScalar(1.0);
+    for (let i = 0; i < rig.debris.length; i++) {
+      rig.debris[i].mesh.position.set(0, 1.0, 0);
+      rig.debris[i].mesh.rotation.set(i, i * 0.7, 0);
+    }
+    this.destroyedBurnTimers[key] = 6.5;
+    this.cameraShakeTrauma = Math.min(1.0, this.cameraShakeTrauma + 0.72);
+    this.emitExcavationBurst(c.x, c.z);
   }
 
   public setLocalSuitAccent(colorHex: string) {
@@ -593,17 +739,31 @@ export class MarsSurfaceScene {
     this.astronaut = createAstronaut({
       accentColorHex: colorHex,
       showGuideArrow: true,
+      initialWeaponId: this.equippedWeaponId,
     });
     this.astronaut.rootGroup.position.copy(oldPos);
     this.astronaut.rootGroup.rotation.y = oldYaw;
+    this.astronaut.bodyMeshGroup.visible = this.cameraFpBlend < 0.72;
     this.scene.add(this.astronaut.rootGroup);
   }
 
   public resetPlayerPosition(slot: 0 | 1 | 2 = 0) {
-    const spawnX = slot === 0 ? 0 : slot === 1 ? -2.6 : 2.6;
-    const spawnZ = 6.5;
+    const spawnX = slot === 0 ? -1.6 : slot === 1 ? -3.4 : 2.4;
+    const spawnZ = 7.4;
     this.physicsBody = createPhysicsBody(spawnX, spawnZ);
-    this.cameraYaw = 0;
+    // Face open Martian terrain, MOXIE pad & Glass Dome with Starship framed heroically on the right
+    this.cameraYaw = 0.54;
+    this.physicsBody.yaw = Math.atan2(-Math.sin(this.cameraYaw), -Math.cos(this.cameraYaw));
+    this.fpPitch = 0;
+    this.cameraFpBlend = 0;
+    this.weaponDrawBlend = 0;
+    this.weaponDrawTarget = 0;
+    this.weaponRecoil = 0;
+    this.muzzleFlashTimer = 0;
+    this.destroyedBurnTimers = {};
+    this.setCameraMode('third-person', true);
+    this.astronaut.bodyMeshGroup.visible = true;
+    this.fpWeaponRoot.visible = false;
     this.syncBodyToVisuals(0);
     this.snapCameraToPlayer();
   }
@@ -796,15 +956,30 @@ export class MarsSurfaceScene {
       this.emitFootstepDust(false);
     }
 
-    this.syncBodyToVisuals(totalTime, isMoving);
-    this.updateCamera(dt);
+    this.syncBodyToVisuals(totalTime, isMoving, dt);
+    this.updateCamera(dt, totalTime, isMoving);
     return stepResult;
   }
 
-  private syncBodyToVisuals(totalTime: number, forceMoving?: boolean) {
+  private syncBodyToVisuals(totalTime: number, forceMoving?: boolean, dt = 0.016) {
     this.playerPos.set(this.physicsBody.x, this.physicsBody.y, this.physicsBody.z);
     this.isGrounded = this.physicsBody.isGrounded;
     this.jetpackFuel = this.physicsBody.jetpackFuel;
+
+    // Smooth weapon draw/holster & recoil decay
+    this.weaponDrawBlend = THREE.MathUtils.damp(
+      this.weaponDrawBlend,
+      this.weaponDrawTarget,
+      11.0,
+      dt
+    );
+    this.weaponRecoil = Math.max(0, this.weaponRecoil - dt * 5.8);
+    this.muzzleFlashTimer = Math.max(0, this.muzzleFlashTimer - dt);
+
+    // Keep astronaut facing camera aim direction when in First-Person
+    if (this.cameraMode === 'first-person') {
+      this.physicsBody.yaw = Math.atan2(-Math.sin(this.cameraYaw), -Math.cos(this.cameraYaw));
+    }
 
     this.astronaut.rootGroup.position.copy(this.playerPos);
     this.astronaut.rootGroup.rotation.y = this.physicsBody.yaw;
@@ -821,33 +996,102 @@ export class MarsSurfaceScene {
       squashY: this.physicsBody.squashY,
       groundY,
       timeSec: totalTime,
+      weaponDrawBlend: this.weaponDrawBlend,
+      weaponRecoil: this.weaponRecoil,
+      muzzleFlashActive: this.muzzleFlashTimer > 0,
     });
   }
 
-  private updateCamera(dt: number) {
+  private updateCamera(dt: number, totalTime = 0, isMoving = false) {
+    const targetFpBlend = this.cameraMode === 'first-person' ? 1 : 0;
+    this.cameraFpBlend = THREE.MathUtils.damp(this.cameraFpBlend, targetFpBlend, 11.5, dt);
+    this.cameraShakeTrauma = Math.max(0, this.cameraShakeTrauma - dt * 1.45);
+    const shakeAmt = this.cameraShakeTrauma * this.cameraShakeTrauma * 0.28;
+    const shakeX = shakeAmt > 0.001 ? Math.sin(totalTime * 47) * shakeAmt : 0;
+    const shakeY = shakeAmt > 0.001 ? Math.cos(totalTime * 53) * shakeAmt : 0;
+
+    // 3rd-person orbit camera target
     const horizDist = Math.cos(this.cameraPitch) * this.cameraDistance;
     const height = Math.sin(this.cameraPitch) * this.cameraDistance + 1.4;
-
-    const targetX = this.playerPos.x + Math.sin(this.cameraYaw) * horizDist;
-    const targetZ = this.playerPos.z + Math.cos(this.cameraYaw) * horizDist;
-    const targetY = Math.max(
-      groundHeightAt(targetX, targetZ, this.activeCraters) + 1.4,
+    const tpX = this.playerPos.x + Math.sin(this.cameraYaw) * horizDist;
+    const tpZ = this.playerPos.z + Math.cos(this.cameraYaw) * horizDist;
+    const tpY = Math.max(
+      groundHeightAt(tpX, tpZ, this.activeCraters) + 1.4,
       this.playerPos.y + height
     );
 
-    this.cameraDesiredPos.set(targetX, targetY, targetZ);
-    this.cameraLookTarget.set(this.playerPos.x, this.playerPos.y + 1.35, this.playerPos.z);
+    // 1st-person eye position & forward look target
+    const eyeBob = isMoving && this.isGrounded ? Math.sin(this.physicsBody.distanceTraveled * 2.9) * 0.045 : 0;
+    const fpX = this.playerPos.x;
+    const fpY = this.playerPos.y + 1.82 + eyeBob;
+    const fpZ = this.playerPos.z;
+    const cosPitch = Math.cos(this.fpPitch);
+    const lookFwdX = -Math.sin(this.cameraYaw) * cosPitch;
+    const lookFwdY = Math.sin(this.fpPitch);
+    const lookFwdZ = -Math.cos(this.cameraYaw) * cosPitch;
 
-    const lambda = 9.0;
-    this.camera.position.x = THREE.MathUtils.damp(this.camera.position.x, this.cameraDesiredPos.x, lambda, dt);
-    this.camera.position.y = THREE.MathUtils.damp(this.camera.position.y, this.cameraDesiredPos.y, lambda, dt);
-    this.camera.position.z = THREE.MathUtils.damp(this.camera.position.z, this.cameraDesiredPos.z, lambda, dt);
+    const b = this.cameraFpBlend;
+    this.cameraDesiredPos.set(
+      THREE.MathUtils.lerp(tpX, fpX, b) + shakeX,
+      THREE.MathUtils.lerp(tpY, fpY, b) + shakeY,
+      THREE.MathUtils.lerp(tpZ, fpZ, b)
+    );
+
+    const lookDist = 14;
+    this.cameraLookTarget.set(
+      THREE.MathUtils.lerp(this.playerPos.x, fpX + lookFwdX * lookDist, b),
+      THREE.MathUtils.lerp(this.playerPos.y + 1.35, fpY + lookFwdY * lookDist, b),
+      THREE.MathUtils.lerp(this.playerPos.z, fpZ + lookFwdZ * lookDist, b)
+    );
+
+    if (b > 0.94) {
+      // Crisp zero-lag FPS lock
+      this.camera.position.copy(this.cameraDesiredPos);
+    } else {
+      const lambda = 10.5;
+      this.camera.position.x = THREE.MathUtils.damp(this.camera.position.x, this.cameraDesiredPos.x, lambda, dt);
+      this.camera.position.y = THREE.MathUtils.damp(this.camera.position.y, this.cameraDesiredPos.y, lambda, dt);
+      this.camera.position.z = THREE.MathUtils.damp(this.camera.position.z, this.cameraDesiredPos.z, lambda, dt);
+    }
     this.camera.lookAt(this.cameraLookTarget);
+
+    // Hide local astronaut helmet/body & show First-Person 3D weapon viewmodel once transitioned
+    const showFpsViewmodel = b > 0.62;
+    this.astronaut.bodyMeshGroup.visible = !showFpsViewmodel;
+    this.fpWeaponRoot.visible = showFpsViewmodel;
+
+    if (showFpsViewmodel) {
+      const drawLift = (1 - Math.min(1, this.weaponDrawBlend)) * 0.28;
+      const walkSwayX = isMoving ? Math.cos(this.physicsBody.distanceTraveled * 1.45) * 0.022 : 0;
+      const walkSwayY = isMoving ? Math.abs(Math.sin(this.physicsBody.distanceTraveled * 1.45)) * 0.018 : Math.sin(totalTime * 2.1) * 0.005;
+      const kickZ = this.weaponRecoil * 0.085;
+      const kickPitch = this.weaponRecoil * 0.14;
+
+      this.fpWeaponRoot.position.set(
+        0.26 + walkSwayX,
+        -0.21 - drawLift + walkSwayY,
+        -0.70 + kickZ
+      );
+      this.fpWeaponRoot.rotation.set(kickPitch - 0.03, 0.14, -walkSwayX * 0.7);
+      this.fpWeaponRoot.scale.setScalar(0.92);
+      if (this.fpWeaponVisual) {
+        this.fpWeaponVisual.muzzleFlash.visible = this.muzzleFlashTimer > 0;
+      }
+    }
 
     this.checkCameraOcclusion();
   }
 
   private checkCameraOcclusion() {
+    if (this.cameraMode === 'first-person') {
+      this.structures.landerMaterials.forEach((mat) => {
+        if (mat.opacity < 0.99) {
+          mat.opacity = 1.0;
+          mat.transparent = false;
+        }
+      });
+      return;
+    }
     const camPos = this.camera.position;
     const pPos = this.playerPos;
     const distCam = Math.hypot(camPos.x, camPos.z);
@@ -1350,14 +1594,20 @@ export class MarsSurfaceScene {
   ): InteractiveTriggerZone | null {
     const p = this.playerPos;
 
-    // 0. Priority: Damaged Module Repair
+    // 0. Priority: Damaged Module Repair (shows resistance tier + critical fire warning)
     const repairable = findRepairableBuildingNear(p, state);
     if (repairable) {
+      const spec = getBuildingDurabilitySpec(repairable.key);
+      const isOnFire = repairable.health <= BUILDING_FIRE_THRESHOLD_PCT;
       return {
         id: `trigger-repair-${repairable.key}`,
-        name: `Reparar ${repairable.label}`,
-        actionText: `Integridade: ${Math.round(repairable.health)}% · Reparando...`,
-        requirementText: 'Pressione [E] ou permaneça perto para restaurar',
+        name: isOnFire
+          ? `EM CHAMAS: ${repairable.label}`
+          : `Reparar ${repairable.label}`,
+        actionText: `Integridade: ${Math.round(repairable.health)}% · Blindagem ${spec.tier}`,
+        requirementText: isOnFire
+          ? 'CRÍTICO! Apague o fogo com [E] antes que exploda!'
+          : '[E] Reparar estrutura',
         hasRequirements: true,
         isRepair: true,
         progressRatio: 0,
@@ -1722,15 +1972,72 @@ export class MarsSurfaceScene {
       }
     }
 
-    // 14. Building Damage Warning Rings
+    // 14. Building Damage Warning Rings, Critical Fires & Explosion Burst Animation
+    this.setEquippedWeapon(state.equippedWeapon);
     for (const key in this.structures.damageRings) {
       const bKey = key as BuildingKey;
       const ring = this.structures.damageRings[bKey];
-      const isDamaged = state.buildings[bKey] && state.buildingHealth[bKey] < 100;
+      const isBuilt = state.buildings[bKey];
+      const hp = state.buildingHealth[bKey];
+      const isDamaged = isBuilt && hp < 100;
       ring.visible = isDamaged;
       if (isDamaged) {
         const s = 0.95 + Math.sin(timeSec * 8) * 0.08;
         ring.scale.set(s, s, 1);
+      }
+
+      // Critical Fire & Rising Smoke (when built & <= 35% HP, OR lingering burn after explosion)
+      const fireRig = this.structures.fireRigs[bKey];
+      const burnLeft = this.destroyedBurnTimers[bKey] || 0;
+      if (burnLeft > 0) {
+        this.destroyedBurnTimers[bKey] = Math.max(0, burnLeft - 0.016);
+      }
+      const isBurning = (isBuilt && hp <= BUILDING_FIRE_THRESHOLD_PCT) || burnLeft > 0;
+      fireRig.group.visible = isBurning;
+      if (isBurning) {
+        const intensity = isBuilt
+          ? 0.75 + (1 - Math.max(0, hp) / BUILDING_FIRE_THRESHOLD_PCT) * 0.65
+          : Math.min(1.0, burnLeft / 3.0);
+        for (let f = 0; f < fireRig.flames.length; f++) {
+          const fl = fireRig.flames[f];
+          const flicker = 0.78 + Math.sin(timeSec * (18 + f * 5) + f * 2.1) * 0.28;
+          fl.scale.set(intensity, intensity * flicker, intensity);
+          fl.rotation.y = timeSec * (2.5 + f);
+        }
+        for (let s = 0; s < fireRig.smokePuffs.length; s++) {
+          const puff = fireRig.smokePuffs[s];
+          const cycle = (timeSec * 0.65 + s * 0.33) % 1;
+          puff.position.y = 1.6 + cycle * 3.4;
+          puff.position.x = Math.sin(timeSec * 1.8 + s * 2.2) * 0.55;
+          const sc = (0.55 + cycle * 1.15) * Math.max(0.45, intensity);
+          puff.scale.setScalar(sc);
+        }
+      }
+    }
+
+    // 14B. Active Building Explosion Shockwave & Flying Debris
+    const exp = this.structures.explosionRig;
+    if (exp.activeTimer > 0) {
+      exp.activeTimer = Math.max(0, exp.activeTimer - 0.016);
+      const t = 1 - exp.activeTimer / exp.durationSec;
+      const sphereScale = 1.0 + t * 5.2;
+      exp.flashSphere.scale.setScalar(sphereScale);
+      (exp.flashSphere.material as THREE.MeshBasicMaterial).opacity = Math.max(0, (1 - t) * 0.95);
+      const ringScale = 1.0 + t * 7.8;
+      exp.shockRing.scale.set(ringScale, ringScale, 1);
+      (exp.shockRing.material as THREE.MeshBasicMaterial).opacity = Math.max(0, (1 - t) * 0.85);
+      for (let i = 0; i < exp.debris.length; i++) {
+        const d = exp.debris[i];
+        d.mesh.position.set(
+          d.vx * t,
+          Math.max(0.15, 1.0 + d.vy * t - 4.8 * t * t),
+          d.vz * t
+        );
+        d.mesh.rotation.x += 0.14;
+        d.mesh.rotation.y += 0.18;
+      }
+      if (exp.activeTimer <= 0) {
+        exp.group.visible = false;
       }
     }
 

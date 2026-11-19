@@ -558,6 +558,83 @@ class SoundManager {
       osc.stop(t + 0.15);
     });
   }
+
+  /**
+   * Crisp mechanical unholster / weapon draw slide click
+   */
+  public playWeaponDraw() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    [320, 680].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const t = ctx.currentTime + idx * 0.055;
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.45, t + 0.06);
+      gain.gain.setValueAtTime(0.075, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.075);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.08);
+    });
+  }
+
+  /**
+   * Heavy catastrophic explosion & fire roar when a colony building is destroyed
+   */
+  public playBuildingExplosion() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    // Deep sub-bass detonation thump
+    const bass = ctx.createOscillator();
+    const bassGain = ctx.createGain();
+    bass.type = 'sawtooth';
+    bass.frequency.setValueAtTime(125, now);
+    bass.frequency.exponentialRampToValueAtTime(28, now + 0.72);
+    bassGain.gain.setValueAtTime(0.22, now);
+    bassGain.gain.exponentialRampToValueAtTime(0.001, now + 0.78);
+
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.setValueAtTime(340, now);
+    lowpass.frequency.exponentialRampToValueAtTime(70, now + 0.75);
+
+    bass.connect(lowpass);
+    lowpass.connect(bassGain);
+    bassGain.connect(ctx.destination);
+    bass.start(now);
+    bass.stop(now + 0.8);
+
+    // Filtered noise crackle burst
+    const bufferSize = Math.floor(ctx.sampleRate * 0.65);
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.35));
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = 'bandpass';
+    noiseFilter.frequency.setValueAtTime(520, now);
+    noiseFilter.Q.setValueAtTime(0.9, now);
+
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.18, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
+
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.66);
+  }
 }
 
 export const soundManager = new SoundManager();

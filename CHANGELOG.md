@@ -4,6 +4,23 @@ Todas as atualizações estruturais, melhorias de física, progressão evolutiva
 
 ---
 
+## [v3.2.0] - 2026-11-19
+
+### `feat(combat-camera): arma nas costas, saque animado, visão 1ª pessoa e alternância livre [X]`
+- Adicionada arma 3D acoplada diagonalmente à mochila PLSS do astronauta (`src/graphics/astronautModel.ts`), refletindo visualmente o armamento equipado (*Pistola de Pulso*, *Rifle a Plasma*, *Escopeta Iônica* ou *Canhão Railgun*).
+- Ao clicar para atirar (clique no cenário, `[F]`, botão `TIRO` no toque ou controle), o astronauta executa animação de saque da arma das costas com som dedicado e transiciona suavemente para **Visão em 1ª Pessoa** (`first-person`) com modelo 3D de câmera (viewmodel), recuo, flash de disparo e mira central tática.
+- Adicionada alternância instantânea entre **Visão Normal (3ª Pessoa)** e **1ª Pessoa** a qualquer momento via tecla `[X]` ou botão `1ªP / 3ªP` no HUD, guardando novamente a arma nas costas ao retornar para 3ª pessoa.
+
+### `feat(durability): resistência por edifício, arquétipos de inimigos, incêndio crítico e explosão`
+- Criado `src/sim/buildingDurability.ts` definindo 4 níveis estruturais (**Leve**, **Média**, **Reforçada** e **Blindada**) com integridade máxima (`180–760`) e blindagem (`2–14`) específicas para cada um dos 11 módulos da colônia, exigindo ataques prolongados e mais fortes em estruturas pesadas.
+- Aprimorados os 4 arquétipos de inimigos (`crawler`, `drone`, `stalker`, `brute`) com vida própria (`75 / 115 / 135 / 280 HP`), poder de ataque, dano estrutural e penetração de blindagem distintos.
+- Adicionado desgaste progressivo com **Estado Crítico em Chamas** (`<= 35%` de integridade: chamas 3D, fumaça ascendente e alerta vermelho no HUD) e **Explosão Catastrófica** em `0%` (onda de choque 3D, detritos, som de explosão e remoção do módulo construído, exigindo reconstrução do zero caso o jogador não repare a tempo).
+
+### `refactor(ui): HUD limpo e minimalista sem excesso de textos e botões`
+- Redesenhado `MarsColonyHUD.tsx` removendo excesso de rótulos, barra inferior de atalhos, telemetria redundante e múltiplos botões espalhados no topo, consolidando ferramentas secundárias (*Oficina*, *Nave*, *Tecnologias*, *Missões*, *Escavar*, *Ameaças/Pacífico* e *Som*) em um menu recolhível de 1 clique (`Menu`).
+
+---
+
 ## [v3.1.0] - 2026-11-19
 
 ### `feat(mobile): adaptação completa para celulares, tablets e controles multi-toque`

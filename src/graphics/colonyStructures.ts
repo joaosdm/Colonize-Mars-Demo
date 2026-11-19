@@ -52,6 +52,28 @@ export interface ScaffoldingRig {
   wireCage: THREE.Mesh;
 }
 
+export interface BuildingFireRig {
+  group: THREE.Group;
+  flames: THREE.Mesh[];
+  smokePuffs: THREE.Mesh[];
+}
+
+export interface ExplosionDebrisPiece {
+  mesh: THREE.Mesh;
+  vx: number;
+  vy: number;
+  vz: number;
+}
+
+export interface ExplosionBurstRig {
+  group: THREE.Group;
+  flashSphere: THREE.Mesh;
+  shockRing: THREE.Mesh;
+  debris: ExplosionDebrisPiece[];
+  activeTimer: number;
+  durationSec: number;
+}
+
 export interface ColonyStructures {
   landerGroup: THREE.Group;
   landerPlume: THREE.Mesh;
@@ -116,9 +138,11 @@ export interface ColonyStructures {
   terraformerTurbine: THREE.Group;
   terraformerBeam: THREE.Mesh;
 
-  // Dynamic Scaffolding & Damage Rings
+  // Dynamic Scaffolding, Damage Rings, Fire/Smoke & Explosion VFX
   scaffoldingRigs: Record<string, ScaffoldingRig>;
   damageRings: Record<BuildingKey, THREE.Mesh>;
+  fireRigs: Record<BuildingKey, BuildingFireRig>;
+  explosionRig: ExplosionBurstRig;
 
   resources: CollectableResource[];
   getObstacles: (buildings: Record<BuildingKey, boolean>) => ObstacleCircle[];
@@ -812,15 +836,134 @@ export function createColonyStructures(): ColonyStructures {
     scaffoldingRigs[def.id] = { group, coreBar, wireCage };
   });
 
-  // 15. DAMAGE WARNING RINGS (shown when buildingHealth[key] < 100)
+  // 15. DAMAGE WARNING RINGS & CRITICAL FIRE/SMOKE RIGS
   const damageRings = {} as Record<BuildingKey, THREE.Mesh>;
+  const fireRigs = {} as Record<BuildingKey, BuildingFireRig>;
+
+  const outerFlameGeo = new THREE.ConeGeometry(0.85, 2.3, 8);
+  outerFlameGeo.translate(0, 1.15, 0);
+  const innerFlameGeo = new THREE.ConeGeometry(0.48, 1.65, 7);
+  innerFlameGeo.translate(0, 0.82, 0);
+  const smokeGeo = new THREE.DodecahedronGeometry(0.55, 0);
+
+  const outerFlameMat = new THREE.MeshBasicMaterial({
+    color: 0xf97316,
+    transparent: true,
+    opacity: 0.88,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const coreFlameMat = new THREE.MeshBasicMaterial({
+    color: 0xfef08a,
+    transparent: true,
+    opacity: 0.92,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const redFlameMat = new THREE.MeshBasicMaterial({
+    color: 0xef4444,
+    transparent: true,
+    opacity: 0.82,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const smokeMat = new THREE.MeshBasicMaterial({
+    color: 0x1e293b,
+    transparent: true,
+    opacity: 0.62,
+    depthWrite: false,
+  });
+
   (Object.keys(BUILDING_COORDS) as BuildingKey[]).forEach((key) => {
     const c = BUILDING_COORDS[key];
     const gy = groundHeightAt(c.x, c.z);
     const ring = createBuildSlotRing(c.x, gy + 0.08, c.z, 0xef4444, 3.2);
     ring.visible = false;
     damageRings[key] = ring;
+
+    const fireGroup = new THREE.Group();
+    fireGroup.name = `FireRig_${key}`;
+    fireGroup.position.set(c.x, gy + 0.4, c.z);
+
+    const f1 = new THREE.Mesh(outerFlameGeo, outerFlameMat);
+    f1.position.set(0, 0.2, 0);
+    const f2 = new THREE.Mesh(innerFlameGeo, coreFlameMat);
+    f2.position.set(0.28, 0.15, 0.22);
+    const f3 = new THREE.Mesh(innerFlameGeo, redFlameMat);
+    f3.position.set(-0.34, 0.1, -0.25);
+
+    const smokePuffs: THREE.Mesh[] = [];
+    for (let s = 0; s < 3; s++) {
+      const puff = new THREE.Mesh(smokeGeo, smokeMat);
+      puff.position.set((s - 1) * 0.45, 2.2 + s * 0.9, (s % 2 === 0 ? 1 : -1) * 0.3);
+      smokePuffs.push(puff);
+      fireGroup.add(puff);
+    }
+
+    fireGroup.add(f1, f2, f3);
+    fireGroup.visible = false;
+    fireRigs[key] = {
+      group: fireGroup,
+      flames: [f1, f2, f3],
+      smokePuffs,
+    };
   });
+
+  // 15B. POOLED 3D BUILDING EXPLOSION RIG (zero GC on detonation)
+  const explosionGroup = new THREE.Group();
+  explosionGroup.name = 'Building_Explosion_Burst';
+  const flashSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(1.1, 14, 12),
+    new THREE.MeshBasicMaterial({
+      color: 0xfb923c,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+  );
+  flashSphere.position.y = 1.4;
+
+  const shockRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.9, 1.55, 28),
+    new THREE.MeshBasicMaterial({
+      color: 0xfef08a,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+  );
+  shockRing.rotation.x = -Math.PI / 2;
+  shockRing.position.y = 0.25;
+
+  const debrisMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
+  const debrisGeo = new THREE.BoxGeometry(0.32, 0.32, 0.32);
+  const debris: ExplosionDebrisPiece[] = [];
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    const mesh = new THREE.Mesh(debrisGeo, debrisMat);
+    mesh.position.set(0, 1.0, 0);
+    explosionGroup.add(mesh);
+    debris.push({
+      mesh,
+      vx: Math.cos(a) * (4.2 + (i % 3) * 1.4),
+      vy: 4.5 + (i % 4) * 1.35,
+      vz: Math.sin(a) * (4.2 + (i % 3) * 1.4),
+    });
+  }
+  explosionGroup.add(flashSphere, shockRing);
+  explosionGroup.visible = false;
+
+  const explosionRig: ExplosionBurstRig = {
+    group: explosionGroup,
+    flashSphere,
+    shockRing,
+    debris,
+    activeTimer: 0,
+    durationSec: 1.35,
+  };
 
   // 16. GROUNDED COLLECTABLE RESOURCES (28 Regolith, 24 Ice) - Clear of all structure pads
   const resources: CollectableResource[] = [];
@@ -1116,6 +1259,8 @@ export function createColonyStructures(): ColonyStructures {
     terraformerBeam,
     scaffoldingRigs,
     damageRings,
+    fireRigs,
+    explosionRig,
     resources,
     getObstacles,
   };
